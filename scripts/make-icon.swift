@@ -9,11 +9,9 @@ let ctx = NSGraphicsContext(bitmapImageRep: rep)!
 NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = ctx
 let s = px / 1024 // design at 1024
 
-// macOS icon grid: 824×824 body centered, corner radius ~185, soft shadow below.
+// macOS icon grid: 824×824 body centered, corner radius ~185. No shadows anywhere: flat and crisp.
 let body = NSRect(x: 100 * s, y: 100 * s, width: 824 * s, height: 824 * s)
 let shape = NSBezierPath(roundedRect: body, xRadius: 185.4 * s, yRadius: 185.4 * s)
-let shadow = NSShadow(); shadow.shadowColor = NSColor.black.withAlphaComponent(0.28); shadow.shadowOffset = NSSize(width: 0, height: -10 * s); shadow.shadowBlurRadius = 24 * s
-NSGraphicsContext.saveGraphicsState(); shadow.set(); NSColor.black.setFill(); shape.fill(); NSGraphicsContext.restoreGraphicsState()
 
 // Black steel: graphite body, faint diagonal sheen, a machined rim bright along the top.
 NSGradient(colors: [NSColor(srgbRed: 0.24, green: 0.245, blue: 0.26, alpha: 1), NSColor(srgbRed: 0.105, green: 0.108, blue: 0.118, alpha: 1),
@@ -36,8 +34,6 @@ tri.move(to: NSPoint(x: cx, y: top))
 for i in [1, 2, 0] { tri.appendArc(from: pts[i], to: pts[(i + 1) % 3], radius: 38 * s) }
 tri.close()
 let red = (top: NSColor(srgbRed: 1.0, green: 0.36, blue: 0.33, alpha: 1), bottom: NSColor(srgbRed: 0.80, green: 0.10, blue: 0.14, alpha: 1))
-let lift = NSShadow(); lift.shadowColor = NSColor.black.withAlphaComponent(0.55); lift.shadowOffset = NSSize(width: 0, height: -6 * s); lift.shadowBlurRadius = 14 * s
-NSGraphicsContext.saveGraphicsState(); lift.set(); red.bottom.setFill(); tri.fill(); NSGraphicsContext.restoreGraphicsState()
 NSGradient(starting: red.top, ending: red.bottom)!.draw(in: tri, angle: -90)
 NSGraphicsContext.saveGraphicsState(); tri.addClip() // gloss on the top edge
 NSGradient(colors: [NSColor.white.withAlphaComponent(0.28), NSColor.white.withAlphaComponent(0)])!.draw(in: NSRect(x: 0, y: top - 240 * s, width: px, height: 240 * s), angle: -90)
@@ -66,8 +62,6 @@ let innerScale = CGFloat(Double(env["ICON_INNER"] ?? "0.5") ?? 0.5)
 if innerScale > 0 {
     let inner = scaled(innerScale, about: NSPoint(x: cx, y: CGFloat(Double(env["ICON_INNER_Y"] ?? "568.8") ?? 568.8) * s), radius: 22)
     NSGraphicsContext.saveGraphicsState()
-    let sh = NSShadow(); sh.shadowColor = NSColor.black.withAlphaComponent(0.25); sh.shadowOffset = NSSize(width: 0, height: -2 * s); sh.shadowBlurRadius = 4 * s
-    sh.set()
     NSGradient(starting: NSColor(white: 1, alpha: 1), ending: NSColor(white: 0.9, alpha: 1))!.draw(in: inner, angle: -90)
     NSGraphicsContext.restoreGraphicsState()
 }

@@ -234,7 +234,7 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
             for i in [1, 2, 0] { tri.appendArc(from: pts[i], to: pts[(i + 1) % 3], radius: 1.8) }
             tri.close()
             // The sign's inner triangle, like the white one on a real yield sign.
-            let c = NSPoint(x: (left + right) / 2, y: 10.75), k: CGFloat = 0.42 // the incenter: an even band all round
+            let c = NSPoint(x: (left + right) / 2, y: 10.75), k: CGFloat = 0.3 // the incenter: an even band all round; small enough to leave clear padding inside the outline
             let inner = NSBezierPath()
             let q = pts.map { NSPoint(x: c.x + ($0.x - c.x) * k, y: c.y + ($0.y - c.y) * k) }
             inner.move(to: NSPoint(x: (q[0].x + q[1].x) / 2, y: q[0].y))
