@@ -8,6 +8,14 @@ any agent to read and resolve those comments.
 
     ./scripts/install.sh          # builds and links ~/.local/bin/pairprogram
 
+## Try it on a playground repo
+
+    ./scripts/playground.sh    # (re)builds ~/dev/pairprogram-playground and opens it
+
+A PR-shaped repo: `feat/partial-payments` is 4 commits ahead of `origin/main`,
+with uncommitted edits, an untracked file and a deleted one, across TypeScript,
+TSX, Rust, Go, Python, CSS and YAML. Re-run it any time to reset.
+
 ## Use
 
     pairprogram                   # from anywhere in a repo; returns right away (like `code .`)
