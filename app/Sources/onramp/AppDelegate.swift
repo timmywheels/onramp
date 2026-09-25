@@ -52,7 +52,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             links.forEach(handleOpen)
             if !controllers.isEmpty { return } // otherwise (you cancelled) start as usual
         }
-        guard let repo = initialRepo ?? RecentProjects.list.first(where: { RecentProjects.repoRoot(of: $0) != nil }) else {
+        let fresh = ProcessInfo.processInfo.environment["ONRAMP_SELFTEST"] == "welcome" // pretend nothing is recent
+        guard !fresh, let repo = initialRepo ?? RecentProjects.list.first(where: { RecentProjects.repoRoot(of: $0) != nil }) else {
             return chooseFirstProject()
         }
         initialRepo = repo
@@ -63,17 +64,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// No repo and nothing recent: ask for one.
     private func chooseFirstProject() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.prompt = "Review"
-        panel.message = "Choose a git repository to review (or any folder inside one)"
-        guard panel.runModal() == .OK, let url = panel.url, let root = RecentProjects.repoRoot(of: url.path) else {
-            if controllers.isEmpty { NSApp.terminate(nil) }
-            return
+        if welcome == nil {
+            let w = WelcomeWindowController()
+            w.onOpenRepo = { [weak self] root in self?.open(tabFor: root) }
+            NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w.window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    // Closed without opening anything, and no menu bar icon to come back from: quit.
+                    guard let self, self.controllers.isEmpty, !MenuBarItem.shared.isShown else { return }
+                    DispatchQueue.main.async { if self.controllers.isEmpty, self.welcome?.window?.isVisible != true { NSApp.terminate(nil) } }
+                }
+            }
+            welcome = w
         }
-        open(tabFor: root)
+        welcome?.showWindow(nil)
+        if ProcessInfo.processInfo.environment["ONRAMP_SELFTEST"] == nil { NSApp.activate(ignoringOtherApps: true) }
+        if ProcessInfo.processInfo.environment["ONRAMP_SELFTEST"] == "welcome" { SelfTest.snap(window: welcome?.window) }
     }
+
+    /// First launch, nothing recent: repos, a PR link field, Open Folder.
+    private var welcome: WelcomeWindowController?
+    /// Any project window open (the Welcome window doesn't count).
+    var hasWindows: Bool { !controllers.isEmpty }
 
     /// A tab for `repo`: the first window if there's none yet.
     private func open(tabFor repo: String) {

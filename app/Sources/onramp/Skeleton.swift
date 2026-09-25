@@ -128,3 +128,61 @@ final class SkeletonView: NSView {
         shine.add(sweep, forKey: "shimmer")
     }
 }
+
+/// What the review shows when there's nothing to review: why, and the way in (a pull request).
+final class EmptyReviewView: NSView {
+    private let icon = NSImageView()
+    private let title = NSTextField(labelWithString: "Nothing to review here yet")
+    private let detail = NSTextField(wrappingLabelWithString: "")
+    private let browse = NSButton(title: "Browse Pull Requests", target: nil, action: nil)
+    private let hint = NSTextField(labelWithString: "⇧⌘P to search pull requests by title, #number or link")
+    var onBrowse: (() -> Void)?
+
+    init() {
+        super.init(frame: .zero)
+        let sign = MenuBarItem.icon(working: false, dot: false)
+        sign.size = NSSize(width: 44, height: 44)
+        icon.image = sign
+        icon.contentTintColor = .tertiaryLabelColor
+        icon.imageScaling = .scaleProportionallyUpOrDown
+        title.font = .systemFont(ofSize: 15, weight: .semibold)
+        title.alignment = .center
+        detail.font = .systemFont(ofSize: 12.5)
+        detail.textColor = .secondaryLabelColor
+        detail.alignment = .center
+        detail.preferredMaxLayoutWidth = 380
+        browse.bezelStyle = .push
+        browse.controlSize = .large
+        browse.bezelColor = DiffStyle.primaryButton
+        browse.target = self
+        browse.action = #selector(browseClicked)
+        hint.font = .systemFont(ofSize: 11)
+        hint.textColor = .tertiaryLabelColor
+        let stack = NSStackView(views: [icon, title, detail, browse, hint])
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 8
+        stack.setCustomSpacing(14, after: icon)
+        stack.setCustomSpacing(18, after: detail)
+        stack.setCustomSpacing(10, after: browse)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(stack)
+        NSLayoutConstraint.activate([
+            icon.widthAnchor.constraint(equalToConstant: 44), icon.heightAnchor.constraint(equalToConstant: 44),
+            detail.widthAnchor.constraint(lessThanOrEqualToConstant: 380),
+            stack.centerXAnchor.constraint(equalTo: centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: centerYAnchor, constant: -30),
+            stack.leadingAnchor.constraint(greaterThanOrEqualTo: leadingAnchor, constant: 24),
+        ])
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// "main matches origin/main." — why there's nothing, in terms of what you're comparing.
+    func set(comparing: String?) {
+        let what = comparing.map { "This matches \($0)." } ?? "There are no changes yet."
+        detail.stringValue = what + " Open a pull request to review it, or ask your agent for a change: it shows up here as it's written."
+    }
+
+    @objc private func browseClicked() { onBrowse?() }
+}

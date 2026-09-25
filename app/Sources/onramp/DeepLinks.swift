@@ -105,6 +105,34 @@ enum Clones {
         return nil
     }
 
+    /// Git repos in the usual code folders (two deep), most recently used first,
+    /// for the Welcome window. Recency is the last time git touched its index.
+    static func localRepos(limit: Int = 8) -> [String] {
+        let fm = FileManager.default
+        let home = Self.home
+        var found: [(path: String, used: Date)] = []
+        func used(_ dir: URL) -> Date? {
+            let git = dir.appendingPathComponent(".git")
+            guard fm.fileExists(atPath: git.path) else { return nil }
+            let index = git.appendingPathComponent("index")
+            return (try? fm.attributesOfItem(atPath: fm.fileExists(atPath: index.path) ? index.path : git.path)[.modificationDate]) as? Date
+        }
+        func children(_ dir: URL) -> [URL] {
+            ((try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isDirectoryKey], options: [.skipsHiddenFiles])) ?? [])
+                .filter { (try? $0.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true }
+        }
+        var seen = Set<String>()
+        for folder in codeFolders.dropLast() { // not ~ itself
+            let root = home.appendingPathComponent(folder)
+            guard seen.insert(root.resolvingSymlinksInPath().path).inserted, fm.fileExists(atPath: root.path) else { continue }
+            for dir in children(root) {
+                if let d = used(dir) { found.append((dir.path, d)); continue }
+                for sub in children(dir) { if let d = used(sub) { found.append((sub.path, d)) } }
+            }
+        }
+        return found.sorted { $0.used > $1.used }.prefix(limit).map(\.path)
+    }
+
     /// Ask where the clone is (once; remembered).
     static func ask(_ slug: String) -> String? {
         // Self-test: answer the panel with this folder (as if you'd picked it).

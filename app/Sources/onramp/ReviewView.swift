@@ -125,6 +125,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
         prBar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
         scrollView.frame = NSRect(x: 0, y: h, width: bounds.width, height: bounds.height - h - barHeight)
         loadingView?.frame = scrollView.frame
+        emptyView?.frame = scrollView.frame
         document.width = scrollView.contentSize.width
         DiffStyle.paintWidth = document.width
 
@@ -187,7 +188,8 @@ final class ReviewView: NSView, NSPopoverDelegate {
         loadMs = (CACurrentMediaTime() - start) * 1000
         onLoad?(document.files)
         updateAgents()
-        document.onFilesReplaced = { [weak self] files in self?.onLoad?(files); self?.updateStatus() }
+        document.onFilesReplaced = { [weak self] files in self?.onLoad?(files); self?.updateStatus(); self?.updateEmpty() }
+        updateEmpty()
         document.watchWorkingTree()
         updateStatus()
         SelfTest.run(review: self)
@@ -289,6 +291,32 @@ final class ReviewView: NSView, NSPopoverDelegate {
     }
 
     /// Fetch a pull request (read-only) and review it. `done` gets an error to show, or nil.
+    /// Browse Pull Requests, from the empty state (the window opens the sidebar).
+    var onBrowsePullRequests: (() -> Void)?
+    private var emptyView: EmptyReviewView?
+
+    /// Nothing changed: say so, and point at pull requests.
+    private func updateEmpty() {
+        let empty = document.files.isEmpty && loadingView == nil
+        if empty, emptyView == nil {
+            let v = EmptyReviewView()
+            v.onBrowse = { [weak self] in self?.onBrowsePullRequests?() }
+            v.frame = scrollView.frame
+            addSubview(v, positioned: .above, relativeTo: scrollView)
+            emptyView = v
+        } else if !empty {
+            emptyView?.removeFromSuperview()
+            emptyView = nil
+        }
+        emptyView?.set(comparing: base.map { b in
+            switch b.mode {
+            case .branch: b.branch
+            case .uncommitted: "your last commit"
+            default: nil
+            }
+        } ?? nil)
+    }
+
     /// Over the diff while a PR is fetched and loaded: diff-shaped placeholders and what's happening.
     private var loadingView: SkeletonView?
 
@@ -306,6 +334,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
     private func hideLoading() {
         loadingView?.removeFromSuperview()
         loadingView = nil
+        updateEmpty()
     }
 
     func openPullRequest(_ number: Int, done: @escaping (String?) -> Void = { _ in }) {

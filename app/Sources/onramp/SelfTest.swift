@@ -714,6 +714,21 @@ enum SelfTest {
         }
     }
 
+    /// Picture of `window` to ONRAMP_SNAP_OUT (as on screen), then quit.
+    static func snap(window: NSWindow?) {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            guard let out = ProcessInfo.processInfo.environment["ONRAMP_SNAP_OUT"], let window else { return log("no window") }
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+            p.arguments = ["-x", "-o", "-l", String(window.windowNumber), out]
+            try? p.run()
+            p.waitUntilExit()
+            log("snap \(out) (\(p.terminationStatus))")
+            NSApp.terminate(nil)
+        }
+    }
+
     static func log(_ s: String) {
         FileHandle.standardError.write(("[selftest] " + s + "\n").data(using: .utf8)!)
     }

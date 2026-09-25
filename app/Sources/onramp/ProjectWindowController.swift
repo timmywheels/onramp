@@ -56,6 +56,7 @@ final class ProjectWindowController: NSWindowController, NSWindowDelegate {
         reviewView = ReviewView(repoPath: repoPath)
         toolbar.review = reviewView
         reviewView.onBaseChanged = { [weak self] _ in self?.baseChanged() }
+        reviewView.onBrowsePullRequests = { [weak self] in self?.openPullRequest(nil) }
         sidebar = FileTreeSidebar()
         wireSidebar()
         // A content view controller resizes the window to its fitting size (tiny, since
@@ -118,6 +119,7 @@ final class ProjectWindowController: NSWindowController, NSWindowDelegate {
         RecentProjects.add(path)
         reviewView = ReviewView(repoPath: path)
         reviewView.onBaseChanged = { [weak self] _ in self?.baseChanged() }
+        reviewView.onBrowsePullRequests = { [weak self] in self?.openPullRequest(nil) }
         sidebar = FileTreeSidebar()
         wireSidebar()
         guard let window else { return }
