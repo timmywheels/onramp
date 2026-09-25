@@ -56,6 +56,134 @@ enum SelfTest {
             }
             return
         }
+        if mode == "menus" {
+            Task { @MainActor in
+                for title in ["View", "File", "Edit"] {
+                    guard let menu = NSApp.mainMenu?.item(withTitle: title)?.submenu ?? NSApp.mainMenu?.items.first(where: { $0.submenu?.title == title })?.submenu else { log("no \(title) menu"); continue }
+                    for pass in 1...2 {
+                        let t0 = CACurrentMediaTime()
+                        menu.delegate?.menuNeedsUpdate?(menu)
+                        menu.update()
+                        log("\(title) menu, pass \(pass): \(String(format: "%.1f", (CACurrentMediaTime() - t0) * 1000)) ms")
+                    }
+                }
+                let t0 = CACurrentMediaTime()
+                _ = Style.shared.monospaceFamilies
+                log("font list (cached now): \(String(format: "%.1f", (CACurrentMediaTime() - t0) * 1000)) ms")
+                log("done")
+            }
+            return
+        }
+        if mode == "commands" {
+            for t in [AgentRunner.Target.claude, .codex] {
+                for resume in [nil, "0199aaaa-bbbb-cccc-dddd-eeeeffff0000"] {
+                    let c = AgentRunner.command(t, prompt: "PROMPT", resume: resume, newSession: "11111111-2222-3333-4444-555555555555")!
+                    log("\(t.rawValue) \(resume == nil ? "fresh" : "continue"): " + c.replacingOccurrences(of: #"--allowedTools '[^']*'"#, with: "--allowedTools '…'", options: .regularExpression))
+                }
+            }
+            log("done")
+            return
+        }
+        if mode == "panel" {
+            Task { @MainActor in
+                let doc = review.document, repo = doc.repoRootForTests, me = doc.reviewAuthor
+                func file(_ suffix: String) -> ReviewFile { doc.files.first { $0.path.hasSuffix(suffix) }! }
+                func add(_ f: ReviewFile, _ line: UInt32, _ body: String, pending: Bool = false) -> Thread {
+                    try! addThread(repoRoot: repo, path: f.path, text: f.newText as String, line: line, oldSide: false, author: me, body: body, pending: pending)
+                }
+                _ = add(file("invoice.routes.ts"), 18, "Validate `amount > 0` here too; negative payments would *increase* the balance.")
+                let asked = add(file("invoice.service.ts"), 40, "Why store a precomputed balance at all?")
+                _ = try! reply(repoRoot: repo, id: asked.id, author: "claude-code", body: "Good question: **it doesn't need to be stored.** Want me to drop it?", pending: false)
+                let claimed = add(file("money.ts"), 15, "allocate() should reject an empty weights array.")
+                _ = try! claimThread(repoRoot: repo, id: claimed.id, agent: "codex")
+                _ = add(file("main.rs"), 20, "Log the job id on each retry.", pending: true)
+                let done = add(file("worker.yaml"), 5, "Two replicas is fine, but set a PodDisruptionBudget.")
+                _ = try! setResolved(repoRoot: repo, id: done.id, resolved: true, author: "claude-code", note: "Added a PDB with minAvailable: 1.")
+                doc.reloadThreads()
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                log("window id \(review.window!.windowNumber)")
+                log("ready")
+            }
+            return
+        }
+        if mode == "agents" {
+            // Claims and "needs you": a comment, an agent claims it, then answers with a question.
+            Task { @MainActor in
+                let doc = review.document, repo = doc.repoRootForTests
+                let fi = doc.files.firstIndex { $0.path.hasSuffix("invoice.routes.ts") } ?? 0; let f = doc.files[fi]
+                let t = try! addThread(repoRoot: repo, path: f.path, text: f.newText as String, line: 17, oldSide: false,
+                                       author: doc.reviewAuthor, body: "Validate amount > 0 here too.", pending: false)
+                _ = try! claimThread(repoRoot: repo, id: t.id, agent: "codex")
+                doc.reloadThreads()
+                try? await Task.sleep(nanoseconds: 2_500_000_000) // agent timer tick
+                log("claimed: button '\(review.agentLabelForTests)'")
+                _ = frame(review.scrollView, to: max(0, doc.frame(ofFile: fi).minY + 200))
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if ProcessInfo.processInfo.environment["PP_STAGE"] == "claimed" { log("window id \(review.window!.windowNumber)"); log("ready"); return }
+                _ = try! releaseThread(repoRoot: repo, id: t.id, agent: "codex")
+                _ = try! reply(repoRoot: repo, id: t.id, author: "codex", body: """
+                Intent: store a precomputed `balance` for every open invoice, so readers don't need to recompute it. Looking at it again, I don't think it holds up:
+
+                1. **The columns might not exist.** The service never reads `invoices.total` or `invoices.paid`; it derives total from line items (`total()`, invoice.service.ts:27).
+                2. **The stored value would go stale.** `recordPayment` (:70) never updates `invoices.balance`.
+
+                Your call, pick one:
+                - **(a) Delete the script** (my recommendation). Balance stays *derived*, one source of truth.
+                - **(b) Keep a stored balance.** About 30 min plus a migration.
+
+                ```
+                update invoices set balance = total - paid
+                ```
+                """, pending: false)
+                doc.reloadThreads()
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                _ = frame(review.scrollView, to: max(0, doc.frame(ofFile: fi).minY + 200))
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                log("replied: button '\(review.agentLabelForTests)'")
+                if ProcessInfo.processInfo.environment["PP_CLICK"] != nil {
+                    doc.setAllCollapsed(true)
+                    _ = frame(review.scrollView, to: 0)
+                    review.clickAgentForTests()
+                    let v = review.scrollView.contentView.bounds
+                    let box = doc.threadView(t.id).map { doc.convert($0.bounds, from: $0) }
+                    log("after click: file folded \(doc.files[fi].collapsed), thread box \(box.map { v.intersection($0).height == $0.height ? "fully visible" : "partly/not visible" } ?? "missing")")
+                }
+                log("window id \(review.window!.windowNumber)")
+                log("ready")
+            }
+            return
+        }
+        if mode == "source" {
+            Task { @MainActor in
+                guard let app = AppDelegate.current else { return log("no app") }
+                @MainActor func show(_ label: String) {
+                    let m = app.sourceToolbar.debugMenus()
+                    let r = app.currentReview
+                    log("\(label): [\(m.titles.0)] [\(m.titles.1)] · \(r.document.files.count) files · \(r.statusText)")
+                }
+                show("start")
+                let m = app.sourceToolbar.debugMenus()
+                log("project menu:\n    " + m.project.joined(separator: "\n    "))
+                log("changes menu:\n    " + m.changes.joined(separator: "\n    "))
+                let commits = try! reviewCommits(repoRoot: app.currentReview.document.repoRootForTests, limit: 40).commits
+                var c = reviewChoice(repoRoot: app.currentReview.document.repoRootForTests)
+                c.mode = .commit; c.commit = commits[1].sha
+                app.currentReview.setChoice(c)
+                show("one commit")
+                let editor = app.currentReview.document.activateEditor(0, offset: 0)
+                log("editor in commit mode: \(editor == nil ? "refused (read-only)" : "OPENED — bug")")
+                c.mode = .branch
+                app.currentReview.setChoice(c)
+                show("branch again")
+                if let other = try? listWorktrees(repoRoot: app.currentReview.document.repoRootForTests).first(where: { !$0.isCurrent }) {
+                    app.open(repo: other.path)
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                    show("switched worktree")
+                }
+                log("done")
+            }
+            return
+        }
         if mode == "bottom" {
             // Scrolled all the way down, the last file must be the current one;
             // jumping to it from the sidebar must put its header at the top.
@@ -129,6 +257,7 @@ enum SelfTest {
                     }
                     log("editor: host.x \(e.host.frame.minX) textView.x \(e.textView.frame.minX) padding \(e.textView.textContainer!.lineFragmentPadding) inset \(e.textView.textContainerInset.width) \(info) · canvas textX \(DiffStyle.gutterWidth + 5)")
                 }
+                if let t = AppDelegate.current?.sourceToolbar { log("toolbar: \(t.debugFrames)") }
                 log("ready")
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 let popover = ProcessInfo.processInfo.environment["PP_POPOVER"]
@@ -298,7 +427,7 @@ enum SelfTest {
                 log("ready for screenshot")
                 guard let target = ProcessInfo.processInfo.environment["PP_SEND"].flatMap(AgentRunner.Target.init(rawValue:)) else { return }
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
-                review.submit(body: "Two issues before this can merge.", verdict: .requestChanges, target: target)
+                review.submit(body: "Two issues before this can merge.", verdict: .requestChanges, targets: [target])
                 log("submitted; pending now \(doc.pendingCount); agent \(review.agentState)")
                 while case .running = review.agentState { try? await Task.sleep(nanoseconds: 1_000_000_000) }
                 log("agent done: \(review.agentState)")

@@ -1,0 +1,21 @@
+{
+  "name": "Deuteranopia Dark",
+  "appearance": "dark",
+  "colors": {
+    "background": "#0d1117", "text": "#e6edf3", "line_number": "#6e7681",
+    "added_background": "#388bfd33", "deleted_background": "#db6d2833", "deleted_text": "#e6edf3b3",
+    "fold_background": "#161b22", "fold_text": "#7d8590",
+    "header_background": "#161b22", "header_text": "#e6edf3", "separator": "#30363d",
+    "caret": "#58a6ff", "current_line": "#6e76811a", "hover": "#6e768114",
+    "comment_background": "#161b22", "comment_border": "#30363d", "accent": "#58a6ff",
+    "added_accent": "#58a6ff", "deleted_accent": "#f0883e", "modified_accent": "#d29922"
+  },
+  "syntax": {
+    "keyword": "#f0883e", "string": "#a5d6ff", "string.special": "#79c0ff", "escape": "#79c0ff",
+    "comment": "#8b949e", "number": "#79c0ff", "boolean": "#79c0ff", "constant": "#79c0ff",
+    "function": "#d2a8ff", "function.builtin": "#d2a8ff", "constructor": "#ffa657",
+    "type": "#ffa657", "module": "#ffa657", "property": "#79c0ff", "variable.builtin": "#ffa657",
+    "tag": "#79c0ff", "attribute": "#d2a8ff", "label": "#ffa657", "operator": "#f0883e",
+    "punctuation.special": "#f0883e"
+  }
+}

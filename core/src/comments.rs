@@ -71,6 +71,26 @@ pub struct Thread {
     pub status: ThreadStatus,
     pub entries: Vec<Entry>,
     pub resolved_by: Option<String>,
+    /// An agent working on this thread right now (see `claim_thread`).
+    #[serde(default)]
+    pub claim: Option<Claim>,
+}
+
+/// "This agent is on it": other agents skip claimed threads. Refreshed by the
+/// claimer's replies; gone when resolved or after `CLAIM_TTL` quiet seconds.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, uniffi::Record)]
+pub struct Claim {
+    pub agent: String,
+    pub at: u64, // unix seconds, last activity
+}
+
+pub const CLAIM_TTL: u64 = 600;
+
+/// The thread's claim if it's still live.
+#[uniffi::export]
+pub fn active_claim(thread: Thread) -> Option<Claim> {
+    let open = thread.status == ThreadStatus::Open;
+    thread.claim.filter(|c| open && now().saturating_sub(c.at) < CLAIM_TTL)
 }
 
 /// A thread plus where its line is now (None = the line is gone: "outdated").
@@ -197,6 +217,7 @@ pub fn add_thread(repo_root: String, path: String, text: String, line: u32, old_
             status: ThreadStatus::Open,
             entries: vec![Entry { author, body, created_at: now(), pending }],
             resolved_by: None,
+            claim: None,
         };
         store.threads.push(thread.clone());
         Ok(thread)
@@ -207,6 +228,9 @@ pub fn add_thread(repo_root: String, path: String, text: String, line: u32, old_
 pub fn reply(repo_root: String, id: String, author: String, body: String, pending: bool) -> Result<Thread, CoreError> {
     modify(&repo_root, |store| {
         let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
+        if let Some(c) = t.claim.as_mut().filter(|c| c.agent == author) {
+            c.at = now(); // still working on it
+        }
         t.entries.push(Entry { author, body, created_at: now(), pending });
         Ok(t.clone())
     })
@@ -222,6 +246,36 @@ pub fn set_resolved(repo_root: String, id: String, resolved: bool, author: Strin
         }
         t.status = if resolved { ThreadStatus::Resolved } else { ThreadStatus::Open };
         t.resolved_by = resolved.then_some(author);
+        t.claim = None;
+        Ok(t.clone())
+    })
+}
+
+/// Take a thread before working on it, so other agents leave it alone.
+/// Fails if another agent holds a live claim, or the thread is resolved.
+#[uniffi::export]
+pub fn claim_thread(repo_root: String, id: String, agent: String) -> Result<Thread, CoreError> {
+    modify(&repo_root, |store| {
+        let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
+        if t.status == ThreadStatus::Resolved {
+            return Err(CoreError::Io { message: format!("{id} is already resolved") });
+        }
+        if let Some(c) = active_claim(t.clone()).filter(|c| c.agent != agent) {
+            return Err(CoreError::Io { message: format!("{id} is claimed by {} (skip it)", c.agent) });
+        }
+        t.claim = Some(Claim { agent, at: now() });
+        Ok(t.clone())
+    })
+}
+
+/// Give a thread back without resolving it.
+#[uniffi::export]
+pub fn release_thread(repo_root: String, id: String, agent: String) -> Result<Thread, CoreError> {
+    modify(&repo_root, |store| {
+        let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
+        if t.claim.as_ref().is_some_and(|c| c.agent == agent) {
+            t.claim = None;
+        }
         Ok(t.clone())
     })
 }
@@ -268,8 +322,13 @@ pub fn submit_review(repo_root: String, author: String, body: String, verdict: V
             }
             if touched { thread_ids.push(t.id.clone()); }
         }
+        if thread_ids.is_empty() {
+            // Comments posted straight away (not in the review) still need addressing:
+            // a review with nothing pending hands those open threads to the agent.
+            thread_ids = store.threads.iter().filter(|t| t.status == ThreadStatus::Open && t.entries.iter().all(|e| !e.pending)).map(|t| t.id.clone()).collect();
+        }
         if thread_ids.is_empty() && body.trim().is_empty() && verdict == Verdict::Comment {
-            return Err(CoreError::Io { message: "nothing to submit: add comments or a summary".into() });
+            return Err(CoreError::Io { message: "Nothing to send yet: leave a comment or a summary first.".into() });
         }
         let review = Review { id: new_id(&store.threads), author, body, verdict, thread_ids, submitted_at: now() };
         store.reviews.push(review.clone());
@@ -411,12 +470,17 @@ pub fn export_markdown(repo_root: String, include_resolved: bool) -> Result<Stri
         md.push_str("No open comments.\n");
         return Ok(md);
     }
+    md.push_str("Claim a comment before working on it (`pairprogram claim <id>`) and skip ones another agent has claimed.\n");
     md.push_str("Address each open comment by editing the code. Then resolve it with a short note:\n");
     md.push_str("`pairprogram resolve <id> --note \"what you changed\"`\n");
     md.push_str("If you disagree or need input, reply instead: `pairprogram reply <id> \"...\"`\n\n");
     for l in &located {
         let t = &l.thread;
-        let status = if t.status == ThreadStatus::Resolved { " (resolved)" } else { "" };
+        let status = match active_claim(t.clone()) {
+            _ if t.status == ThreadStatus::Resolved => " (resolved)".to_string(),
+            Some(c) => format!(" (claimed by {}: skip it unless that's you)", c.agent),
+            None => String::new(),
+        };
         let side = if t.anchor.old_side { " (on a deleted line; numbers are from the original file)" } else { "" };
         match l.line {
             Some(n) => md.push_str(&format!("## `{}` · {}:{}{}{}\n\n", t.id, t.path, n + 1, side, status)),
@@ -490,6 +554,34 @@ mod tests {
         let all = load_threads(root.clone()).unwrap();
         assert_eq!(all[0].status, ThreadStatus::Resolved);
         assert_eq!(all[0].entries.len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn claims_keep_agents_apart() {
+        let dir = std::env::temp_dir().join(format!("pp-claims-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        Command::new("git").args(["init", "-q"]).current_dir(&dir).status().unwrap();
+        let root = dir.to_string_lossy().to_string();
+
+        let t = add_thread(root.clone(), "a.txt".into(), "x\n".into(), 0, false, "you".into(), "fix".into(), false).unwrap();
+        claim_thread(root.clone(), t.id.clone(), "claude-code".into()).unwrap();
+        let err = claim_thread(root.clone(), t.id.clone(), "codex".into()).unwrap_err().to_string();
+        assert!(err.contains("claimed by claude-code"), "{err}");
+        claim_thread(root.clone(), t.id.clone(), "claude-code".into()).unwrap(); // re-claiming your own is fine
+        assert!(export_markdown(root.clone(), false).unwrap().contains("claimed by claude-code"));
+
+        // A review with nothing pending still hands the open comment to the agent.
+        let r = submit_review(root.clone(), "you".into(), String::new(), Verdict::RequestChanges).unwrap();
+        assert_eq!(r.thread_ids, vec![t.id.clone()]);
+        let r = submit_review(root.clone(), "you".into(), String::new(), Verdict::Comment).unwrap();
+        assert_eq!(r.thread_ids, vec![t.id.clone()]);
+
+        let done = set_resolved(root.clone(), t.id.clone(), true, "claude-code".into(), Some("fixed".into())).unwrap();
+        assert_eq!(done.claim, None);
+        assert!(claim_thread(root.clone(), t.id.clone(), "codex".into()).is_err()); // resolved
+        assert!(submit_review(root.clone(), "you".into(), String::new(), Verdict::Comment).is_err()); // truly nothing
         let _ = fs::remove_dir_all(&dir);
     }
 

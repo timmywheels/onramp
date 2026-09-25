@@ -101,6 +101,8 @@ final class FileTreeSidebar: NSViewController {
 
     static let rowHeight: CGFloat = 24
 
+    @objc private func styleChanged() { canvas.needsDisplay = true } // theme colors are baked into rows
+
     override func loadView() {
         scroll.hasVerticalScroller = true
         scroll.drawsBackground = false
@@ -110,6 +112,7 @@ final class FileTreeSidebar: NSViewController {
         document.addSubview(canvas)
         NotificationCenter.default.addObserver(self, selector: #selector(followViewport), name: NSView.boundsDidChangeNotification, object: scroll.contentView)
         NotificationCenter.default.addObserver(self, selector: #selector(followViewport), name: NSView.frameDidChangeNotification, object: scroll.contentView)
+        NotificationCenter.default.addObserver(self, selector: #selector(styleChanged), name: .styleChanged, object: nil)
         view = scroll
     }
 
@@ -311,9 +314,9 @@ private final class TreeCanvas: NSView {
             let viewed = file?.viewed == true
             var (symbol, tint): (String, NSColor) = switch file?.status {
             case nil: ("folder", .secondaryLabelColor)
-            case .added?, .untracked?: ("doc.badge.plus", .systemGreen)
-            case .deleted?: ("doc.badge.minus", .systemRed)
-            case .modified?: ("doc", .systemOrange)
+            case .added?, .untracked?: ("doc.badge.plus", DiffStyle.addedAccent)
+            case .deleted?: ("doc.badge.minus", DiffStyle.deletedAccent)
+            case .modified?: ("doc", DiffStyle.modifiedAccent)
             }
             if viewed { (symbol, tint) = ("checkmark.circle.fill", .tertiaryLabelColor) }
             icon(symbol, onAccent ? .white : tint)?.draw(in: NSRect(x: x, y: y + 5, width: 14, height: 14))
@@ -321,10 +324,10 @@ private final class TreeCanvas: NSView {
 
             // Counts (right), then the name truncated to fit.
             let counts = NSMutableAttributedString()
-            if node.added > 0 { counts.append(NSAttributedString(string: "+\(node.added)", attributes: [.font: countFont, .foregroundColor: onAccent ? NSColor.white : .systemGreen])) }
+            if node.added > 0 { counts.append(NSAttributedString(string: "+\(node.added)", attributes: [.font: countFont, .foregroundColor: onAccent ? NSColor.white : DiffStyle.addedAccent])) }
             if node.removed > 0 {
                 if node.added > 0 { counts.append(NSAttributedString(string: " ", attributes: [.font: countFont])) }
-                counts.append(NSAttributedString(string: "−\(node.removed)", attributes: [.font: countFont, .foregroundColor: onAccent ? NSColor.white : .systemRed]))
+                counts.append(NSAttributedString(string: "−\(node.removed)", attributes: [.font: countFont, .foregroundColor: onAccent ? NSColor.white : DiffStyle.deletedAccent]))
             }
             let cw = ceil(counts.size().width)
             counts.draw(at: NSPoint(x: rowRect.maxX - 6 - cw, y: y + 6))

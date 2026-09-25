@@ -28,9 +28,11 @@ TSX, Rust, Go, Python, CSS and YAML. Re-run it any time to reset.
   and choose who to send it to. Submitting publishes the pending comments and can start
   Claude Code (`claude -p`) or Codex (`codex exec`) in the repo to address them; their fixes and
   replies show up live. Pending comments are invisible to agents until you submit.
-- **Branch / Uncommitted** (status bar): Branch shows everything on your branch since it
-  forked from the default branch (`origin/HEAD`, else main/master), committed or not, like a PR.
-  Uncommitted shows only what's not committed yet. Saved per repo; agents see the same set.
+- **Toolbar, left:** switch project or worktree (this repo's worktrees, recent projects, ⌘O to open a folder).
+- **Toolbar, right — what to review:** *All changes on this branch* (committed or not, against where it left
+  its base branch — `origin/HEAD`, else main/master, or pick one under *Compare Against*), *Uncommitted
+  changes*, or one of the branch's commits (read-only). Saved per repo; agents see the same set.
+- **Viewed** checkboxes fold files as you go; the status bar shows progress. ⌥⌘← / ⌥⌘→ collapse/expand all.
 - Click any line to edit it in place. ⌘S saves all files.
 - Click a file header to fold it; click "⋯ unchanged lines" to show more context.
 - ⌃⌘S toggles the file tree, ⌘+/⌘− change the font, ⇧⌘R shows resolved comments.

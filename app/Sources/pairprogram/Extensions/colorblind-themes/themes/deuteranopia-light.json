@@ -1,0 +1,21 @@
+{
+  "name": "Deuteranopia Light",
+  "appearance": "light",
+  "colors": {
+    "background": "#ffffff", "text": "#1f2328", "line_number": "#8c959f",
+    "added_background": "#ddf4ff", "deleted_background": "#fff1e5", "deleted_text": "#1f2328b3",
+    "fold_background": "#f6f8fa", "fold_text": "#59636e",
+    "header_background": "#f6f8fa", "header_text": "#1f2328", "separator": "#d1d9e0",
+    "caret": "#0969da", "current_line": "#0000000a", "hover": "#0000000a",
+    "comment_background": "#f6f8fa", "comment_border": "#d1d9e0", "accent": "#0969da",
+    "added_accent": "#0969da", "deleted_accent": "#bc4c00", "modified_accent": "#9a6700"
+  },
+  "syntax": {
+    "keyword": "#bc4c00", "string": "#0a3069", "string.special": "#0550ae", "escape": "#0550ae",
+    "comment": "#6e7781", "number": "#0550ae", "boolean": "#0550ae", "constant": "#0550ae",
+    "function": "#8250df", "function.builtin": "#8250df", "constructor": "#953800",
+    "type": "#953800", "module": "#953800", "property": "#0550ae", "variable.builtin": "#953800",
+    "tag": "#0550ae", "attribute": "#8250df", "label": "#953800", "operator": "#bc4c00",
+    "punctuation.special": "#bc4c00"
+  }
+}

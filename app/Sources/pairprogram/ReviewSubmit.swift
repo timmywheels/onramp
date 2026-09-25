@@ -33,25 +33,48 @@ final class AgentRunner {
     private static let claudeTools = [
         "Read", "Edit", "Write", "Glob", "Grep",
         "mcp__plugin_pairprogram_pairprogram__list_comments", "mcp__plugin_pairprogram_pairprogram__reply_to_comment",
-        "mcp__plugin_pairprogram_pairprogram__resolve_comment",
+        "mcp__plugin_pairprogram_pairprogram__resolve_comment", "mcp__plugin_pairprogram_pairprogram__claim_comment",
+        "mcp__plugin_pairprogram_pairprogram__release_comment",
         "mcp__pairprogram__list_comments", "mcp__pairprogram__reply_to_comment", "mcp__pairprogram__resolve_comment",
+        "mcp__pairprogram__claim_comment", "mcp__pairprogram__release_comment",
     ].joined(separator: ",")
 
-    static func command(_ target: Target, prompt: String) -> String? {
+    /// The shell command for a run. `resume`: the session to continue (the
+    /// one a previous run of ours recorded, never one of your own sessions).
+    static func command(_ target: Target, prompt: String, resume: String?, newSession: String) -> String? {
         let q = "'" + prompt.replacingOccurrences(of: "'", with: "'\\''") + "'"
         switch target {
-        case .claude: return "claude -p \(q) --permission-mode acceptEdits --allowedTools '\(claudeTools)'"
-        case .codex: return "codex exec --sandbox workspace-write --approve-for-me \(q)"
+        case .claude:
+            let session = resume.map { "--resume \($0)" } ?? "--session-id \(newSession)"
+            return "claude -p \(q) \(session) --permission-mode acceptEdits --allowedTools '\(claudeTools)'"
+        case .codex:
+            if let resume { return "codex exec resume \(resume) -c sandbox_mode='\"workspace-write\"' \(q)" }
+            return "codex exec --sandbox workspace-write --approve-for-me \(q)"
         case .none: return nil
         }
     }
 
+    // MARK: Sessions
+
+    /// "Continue each agent's last session" (per repo).
+    static func continuesSession(repo: String) -> Bool { UserDefaults.standard.bool(forKey: "pairprogram.continueSession." + repo) }
+    static func setContinuesSession(_ on: Bool, repo: String) { UserDefaults.standard.set(on, forKey: "pairprogram.continueSession." + repo) }
+
+    private static func sessionKey(_ target: Target, _ repo: String) -> String { "pairprogram.session.\(target.rawValue)." + repo }
+    static func lastSession(_ target: Target, repo: String) -> String? { UserDefaults.standard.string(forKey: sessionKey(target, repo)) }
+    private static func remember(_ id: String, _ target: Target, repo: String) { UserDefaults.standard.set(id, forKey: sessionKey(target, repo)) }
+
     func run(_ target: Target, repo: String) {
-        guard let command = Self.command(target, prompt: MCPServer.addressPrompt), process == nil else { return }
-        let log = (try? commentsPath(repoRoot: repo)).map { URL(fileURLWithPath: $0).deletingLastPathComponent().appendingPathComponent("agent-run.log") }
-            ?? FileManager.default.temporaryDirectory.appendingPathComponent("pairprogram-agent-run.log")
+        guard process == nil else { return }
+        let wanted = Self.continuesSession(repo: repo) ? Self.lastSession(target, repo: repo) : nil
+        let fresh = UUID().uuidString.lowercased()
+        guard let command = Self.command(target, prompt: MCPServer.addressPrompt, resume: wanted, newSession: fresh) else { return }
+        if target == .claude { Self.remember(wanted ?? fresh, target, repo: repo) } // we chose the id up front
+        let log = (try? commentsPath(repoRoot: repo)).map { URL(fileURLWithPath: $0).deletingLastPathComponent().appendingPathComponent("agent-run-\(target.rawValue).log") }
+            ?? FileManager.default.temporaryDirectory.appendingPathComponent("pairprogram-agent-run-\(target.rawValue).log")
         logURL = log
-        FileManager.default.createFile(atPath: log.path, contents: Data("$ \(command)\n\n".utf8))
+        let note = Self.continuesSession(repo: repo) && wanted == nil ? "# no earlier session to continue: starting a new one\n" : ""
+        FileManager.default.createFile(atPath: log.path, contents: Data("\(note)$ \(command)\n\n".utf8))
         let handle = try? FileHandle(forWritingTo: log)
         handle?.seekToEndOfFile()
 
@@ -66,6 +89,11 @@ final class AgentRunner {
             let ok = proc.terminationStatus == 0
             Task { @MainActor in
                 try? handle?.close()
+                // Codex picks its own session id and prints it; keep it for "continue".
+                if target == .codex, let text = try? String(contentsOf: log, encoding: .utf8),
+                   let m = text.range(of: #"session id: [0-9a-f-]{36}"#, options: [.regularExpression, .caseInsensitive]) {
+                    Self.remember(String(text[m].suffix(36)), target, repo: repo)
+                }
                 self?.process = nil
                 self?.state = .finished(target, ok: ok)
             }
@@ -79,12 +107,14 @@ final class AgentRunner {
         }
     }
 
-    static func savedTarget(repo: String) -> Target {
-        Target(rawValue: UserDefaults.standard.string(forKey: "pairprogram.sendTo." + repo) ?? "") ?? .claude
+    /// Agents to request a review from, remembered per repo (Claude Code the first time).
+    static func savedTargets(repo: String) -> [Target] {
+        guard let saved = UserDefaults.standard.string(forKey: "pairprogram.sendTo." + repo) else { return [.claude] }
+        return saved.split(separator: ",").compactMap { Target(rawValue: String($0)) }.filter { $0 != .none }
     }
 
-    static func save(_ target: Target, repo: String) {
-        UserDefaults.standard.set(target.rawValue, forKey: "pairprogram.sendTo." + repo)
+    static func save(_ targets: [Target], repo: String) {
+        UserDefaults.standard.set(targets.map(\.rawValue).joined(separator: ","), forKey: "pairprogram.sendTo." + repo)
     }
 }
 
@@ -92,11 +122,14 @@ final class AgentRunner {
 final class ReviewSubmitViewController: NSViewController {
     private let summary = NSTextView()
     private var verdictButtons: [NSButton] = []
-    private let sendTo = NSPopUpButton()
+    private var agentBoxes: [(AgentRunner.Target, NSButton)] = []
+    private let continueBox = NSButton(checkboxWithTitle: "Continue each agent's last session", target: nil, action: nil)
     private let pending: Int
+    private let open: Int
     private let repo: String
+    private let errorLabel = PopoverUI.note("", size: 11.5)
 
-    var onSubmit: ((_ body: String, _ verdict: Verdict, _ target: AgentRunner.Target) -> Void)?
+    var onSubmit: ((_ body: String, _ verdict: Verdict, _ targets: [AgentRunner.Target]) -> Void)?
     var onDiscard: (() -> Void)?
 
     private static let verdicts: [(Verdict, String, String)] = [
@@ -105,8 +138,9 @@ final class ReviewSubmitViewController: NSViewController {
         (.requestChanges, "Request changes", "The agent should address these before this moves on."),
     ]
 
-    init(pending: Int, repo: String) {
+    init(pending: Int, open: Int, repo: String) {
         self.pending = pending
+        self.open = open
         self.repo = repo
         super.init(nibName: nil, bundle: nil)
     }
@@ -114,17 +148,18 @@ final class ReviewSubmitViewController: NSViewController {
     required init?(coder: NSCoder) { fatalError() }
 
     override func loadView() {
-        let subtitle = switch pending {
-        case 0: "No pending comments. You can still leave a summary."
-        case 1: "Publishes your 1 pending comment."
-        default: "Publishes your \(pending) pending comments."
+        let comments = { (n: Int) in n == 1 ? "1 comment" : "\(n) comments" }
+        let subtitle = switch (pending, open) {
+        case (0, 0): "No comments yet. You can still send a summary."
+        case (0, _): "Your \(comments(open)) open go to the agent."
+        default: "Publishes your \(pending) pending \(pending == 1 ? "comment" : "comments")" + (open > pending ? ", along with the \(comments(open - pending)) already posted." : ".")
         }
         let stack = PopoverUI.stack([])
         PopoverUI.add(PopoverUI.title("Finish your review"), to: stack, spacingAfter: 4)
         PopoverUI.add(PopoverUI.note(subtitle), to: stack, spacingAfter: 14)
         PopoverUI.add(summaryField(), to: stack, spacingAfter: 16)
 
-        let initial = pending > 0 ? 2 : 0
+        let initial = pending > 0 || open > 0 ? 2 : 0 // there's something to fix: request changes
         for (i, (_, title, detail)) in Self.verdicts.enumerated() {
             let radio = NSButton(radioButtonWithTitle: title, target: self, action: #selector(verdictPicked(_:)))
             radio.font = .systemFont(ofSize: 13, weight: .medium)
@@ -142,11 +177,21 @@ final class ReviewSubmitViewController: NSViewController {
 
         PopoverUI.add(PopoverUI.separator(), to: stack, spacingAfter: 14)
 
-        let sendLabel = NSTextField(labelWithString: "Then send it to")
+        let sendLabel = NSTextField(labelWithString: "Request review from")
         sendLabel.font = .systemFont(ofSize: 13)
-        sendTo.addItems(withTitles: AgentRunner.Target.allCases.map(\.title))
-        sendTo.selectItem(at: AgentRunner.Target.allCases.firstIndex(of: AgentRunner.savedTarget(repo: repo)) ?? 0)
-        PopoverUI.add(PopoverUI.row([sendLabel], [sendTo]), to: stack, spacingAfter: 18)
+        let saved = AgentRunner.savedTargets(repo: repo)
+        let boxes: [NSView] = AgentRunner.Target.allCases.filter { $0 != .none }.map { target in
+            let box = NSButton(checkboxWithTitle: target.title, target: nil, action: nil)
+            box.state = saved.contains(target) ? .on : .off
+            agentBoxes.append((target, box))
+            return box
+        }
+        PopoverUI.add(PopoverUI.row([sendLabel], boxes, spacing: 14), to: stack, spacingAfter: 4)
+        PopoverUI.add(PopoverUI.note("Checked agents start on it right away, side by side; each claims different comments.", size: 11), to: stack, spacingAfter: 10)
+        continueBox.state = AgentRunner.continuesSession(repo: repo) ? .on : .off
+        continueBox.font = .systemFont(ofSize: 12)
+        continueBox.toolTip = "On: each agent picks up its previous review session, keeping what it learned. Off: a fresh session every time."
+        PopoverUI.add(continueBox, to: stack, spacingAfter: 18)
 
         let submit = NSButton(title: "Submit review", target: self, action: #selector(submitClicked))
         submit.bezelStyle = .push
@@ -161,6 +206,9 @@ final class ReviewSubmitViewController: NSViewController {
             discard.contentTintColor = .systemRed
             leading.append(discard)
         }
+        errorLabel.textColor = .systemRed
+        errorLabel.isHidden = true
+        PopoverUI.add(errorLabel, to: stack, spacingAfter: 10)
         PopoverUI.add(PopoverUI.row(leading, [cancel, submit]), to: stack)
 
         view = PopoverUI.container(stack)
@@ -205,9 +253,18 @@ final class ReviewSubmitViewController: NSViewController {
 
     @objc private func submitClicked() {
         let i = verdictButtons.firstIndex { $0.state == .on } ?? 0
-        let target = AgentRunner.Target.allCases[max(0, sendTo.indexOfSelectedItem)]
-        AgentRunner.save(target, repo: repo)
-        onSubmit?(summary.string.trimmingCharacters(in: .whitespacesAndNewlines), Self.verdicts[i].0, target)
+        let targets = agentBoxes.filter { $0.1.state == .on }.map(\.0)
+        AgentRunner.save(targets, repo: repo)
+        AgentRunner.setContinuesSession(continueBox.state == .on, repo: repo)
+        onSubmit?(summary.string.trimmingCharacters(in: .whitespacesAndNewlines), Self.verdicts[i].0, targets)
+    }
+
+    /// Show why submitting didn't work, in the popover.
+    func show(error: String) {
+        errorLabel.stringValue = error
+        errorLabel.isHidden = false
+        view.layoutSubtreeIfNeeded()
+        preferredContentSize = view.fittingSize
     }
 
     @objc private func cancelClicked() { view.window?.performClose(nil) }

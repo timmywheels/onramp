@@ -42,6 +42,10 @@ enum DiffStyle {
     nonisolated(unsafe) static var commentBorder = NSColor.separatorColor
     nonisolated(unsafe) static var accent = NSColor.controlAccentColor
     nonisolated(unsafe) static var isDark = true
+    /// Added / deleted / modified in counts, badges and icons (themes swap these for color-blind palettes).
+    nonisolated(unsafe) static var addedAccent = NSColor.systemGreen
+    nonisolated(unsafe) static var deletedAccent = NSColor.systemRed
+    nonisolated(unsafe) static var modifiedAccent = NSColor.systemOrange
     /// Resolved color per highlight kind (index into `Syntax.names`); nil = plain text.
     nonisolated(unsafe) static var syntaxColors: [NSColor?] = []
     static func syntaxColor(_ kind: Int) -> NSColor? { kind < syntaxColors.count ? syntaxColors[kind] : nil }
@@ -72,6 +76,9 @@ enum DiffStyle {
         commentBackground = theme.color("comment_background")
         commentBorder = theme.color("comment_border")
         accent = theme.color("accent")
+        addedAccent = theme.color("added_accent")
+        deletedAccent = theme.color("deleted_accent")
+        modifiedAccent = theme.color("modified_accent")
         syntaxColors = Syntax.names.map { theme.syntaxColor($0) }
         lineNumberAttrs = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: max(9, size - 1.5), weight: .regular),

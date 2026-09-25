@@ -48,6 +48,7 @@ enum MCPServer {
             case "tools/call":
                 let name = params["name"] as? String ?? ""
                 let args = params["arguments"] as? [String: Any] ?? [:]
+                if let presence { touch(presence, agent: author, action: name) } // the app shows "working"
                 do {
                     respond(id, result: ["content": [["type": "text", "text": try call(name, args, repoRoot: repoRoot, author: author)]]])
                 } catch {
@@ -62,9 +63,10 @@ enum MCPServer {
 
     static let addressPrompt = """
     I reviewed your changes in pairprogram and left the comments below. For each open comment: \
-    fix the code, then call resolve_comment with a one-line note on what you changed. If a comment \
-    needs a decision from me, call reply_to_comment with your question instead of resolving it. \
-    When you're done, call list_comments to confirm nothing is left open.
+    call claim_comment first (skip any claimed by another agent), fix the code, then call \
+    resolve_comment with a one-line note on what you changed. If a comment needs a decision from \
+    me, call reply_to_comment with your question instead of resolving it. When you're done, call \
+    list_comments to confirm nothing is left open.
     """
 
     /// Tell the app an agent is connected: `<git-dir>/pairprogram/agent-<pid>.json`,
@@ -80,11 +82,24 @@ enum MCPServer {
         return path
     }
 
+    /// Record the agent's latest tool call in its presence file.
+    private static func touch(_ path: String, agent: String, action: String) {
+        let now = Int(Date().timeIntervalSince1970)
+        var info = (FileManager.default.contents(atPath: path).flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }) ?? [:]
+        info["agent"] = agent
+        info["pid"] = Int(getpid())
+        info["last_activity"] = now
+        info["last_action"] = action
+        if let data = try? JSONSerialization.data(withJSONObject: info) { try? data.write(to: URL(fileURLWithPath: path), options: .atomic) }
+    }
+
     static let instructions = """
     The user reviews your code changes in pairprogram and leaves comments on specific lines.
-    Call list_comments to see open comments with the code they refer to. Address each by editing \
-    the code, then call resolve_comment with a short note on what you changed. If a comment needs \
-    a decision from the user, call reply_to_comment with your question instead of resolving it.
+    Call list_comments to see open comments with the code they refer to. Before working on one, \
+    call claim_comment so other agents leave it alone (skip comments another agent has claimed). \
+    Address each by editing the code, then call resolve_comment with a short note on what you \
+    changed. If a comment needs a decision from the user, call reply_to_comment with your question \
+    instead of resolving it.
     """
 
     static let tools: [[String: Any]] = [
@@ -100,6 +115,12 @@ enum MCPServer {
             "note": ["type": "string", "description": "Short note on what you changed."],
         ], required: ["id"]),
         tool("reopen_comment", "Reopen a resolved comment thread.", [
+            "id": ["type": "string", "description": "Thread id."],
+        ], required: ["id"]),
+        tool("claim_comment", "Claim a comment thread before working on it, so other agents skip it. Fails if another agent has it.", [
+            "id": ["type": "string", "description": "Thread id from list_comments."],
+        ], required: ["id"]),
+        tool("release_comment", "Give a claimed thread back without resolving it (e.g. you can't do it).", [
             "id": ["type": "string", "description": "Thread id."],
         ], required: ["id"]),
     ]
@@ -123,6 +144,12 @@ enum MCPServer {
         case "resolve_comment":
             let t = try setResolved(repoRoot: repoRoot, id: try arg("id"), resolved: true, author: author, note: args["note"] as? String)
             return "Resolved \(t.id)."
+        case "claim_comment":
+            let t = try claimThread(repoRoot: repoRoot, id: try arg("id"), agent: author)
+            return "Claimed \(t.id): it's yours. Resolve it (or release_comment) when done."
+        case "release_comment":
+            let t = try releaseThread(repoRoot: repoRoot, id: try arg("id"), agent: author)
+            return "Released \(t.id)."
         case "reopen_comment":
             let t = try setResolved(repoRoot: repoRoot, id: try arg("id"), resolved: false, author: author, note: nil)
             return "Reopened \(t.id)."

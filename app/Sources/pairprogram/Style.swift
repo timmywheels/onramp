@@ -52,6 +52,7 @@ final class Style {
     private var appearanceObservation: NSKeyValueObservation?
 
     func start() {
+        loadMonospaceFamilies()
         load()
         apply()
         appearanceObservation = NSApp.observe(\.effectiveAppearance) { _, _ in
@@ -154,11 +155,23 @@ final class Style {
     }
 
     /// Monospace families for the Font menu: the default first, then the rest A–Z.
-    lazy var monospaceFamilies: [String] = {
-        let names = NSFontManager.shared.availableFontNames(with: .fixedPitchFontMask) ?? []
-        let families = Set(names.compactMap { NSFont(name: $0, size: 12)?.familyName }.filter { !$0.hasPrefix(".") })
-        return [Self.defaultFontFamily, Self.systemFontFamily] + families.subtracting([Self.defaultFontFamily]).sorted()
-    }()
+    /// Built in the background at launch: loading every font to ask "fixed
+    /// pitch?" took ~3 s and stalled the first menu open (and first ⌘-shortcut).
+    private(set) var monospaceFamilies: [String] = [Style.defaultFontFamily, Style.systemFontFamily]
+
+    private func loadMonospaceFamilies() {
+        DispatchQueue.global(qos: .utility).async {
+            let fm = NSFontManager.shared
+            // Each family's members carry their traits; no font needs to be loaded.
+            let mono = fm.availableFontFamilies.filter { family in
+                !family.hasPrefix(".") && (fm.availableMembers(ofFontFamily: family) ?? []).contains { member in
+                    ((member.count > 3 ? member[3] as? UInt : nil) ?? 0) & UInt(NSFontTraitMask.fixedPitchFontMask.rawValue) != 0
+                }
+            }
+            let list = [Style.defaultFontFamily, Style.systemFontFamily] + Set(mono).subtracting([Style.defaultFontFamily]).sorted()
+            DispatchQueue.main.async { Style.shared.monospaceFamilies = list }
+        }
+    }
 
     private func apply() {
         switch settings.appearance {

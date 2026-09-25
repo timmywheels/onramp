@@ -38,6 +38,9 @@ struct Theme: Codable {
         "comment_background": "comment boxes",
         "comment_border": "comment box border",
         "accent": "buttons and highlights",
+        "added_accent": "added: +counts, badges, icons",
+        "deleted_accent": "deleted: −counts, badges, icons",
+        "modified_accent": "modified-file badges and icons",
     ]
 
     func color(_ key: String) -> NSColor {
@@ -66,6 +69,7 @@ struct Theme: Codable {
         "header_background": "#262626", "header_text": "#e6e6e6", "separator": "#ffffff1a",
         "caret": "#4c9aff", "current_line": "#ffffff0a", "hover": "#ffffff09",
         "comment_background": "#262a31", "comment_border": "#3d4452", "accent": "#4c9aff",
+        "added_accent": "#3fb950", "deleted_accent": "#f85149", "modified_accent": "#d29922",
     ], syntax: [ // One Dark
         "keyword": "#c678dd", "string": "#98c379", "string.special": "#56b6c2", "escape": "#56b6c2",
         "comment": "#7f848e", "number": "#d19a66", "boolean": "#d19a66", "constant": "#d19a66",
@@ -82,6 +86,7 @@ struct Theme: Codable {
         "header_background": "#f6f8fa", "header_text": "#1f2328", "separator": "#d0d7de",
         "caret": "#0969da", "current_line": "#0000000a", "hover": "#0000000a",
         "comment_background": "#f6f8fa", "comment_border": "#d0d7de", "accent": "#0969da",
+        "added_accent": "#1a7f37", "deleted_accent": "#cf222e", "modified_accent": "#9a6700",
     ], syntax: [ // One Light
         "keyword": "#a626a4", "string": "#50a14f", "string.special": "#0184bc", "escape": "#0184bc",
         "comment": "#a0a1a7", "number": "#986801", "boolean": "#986801", "constant": "#986801",

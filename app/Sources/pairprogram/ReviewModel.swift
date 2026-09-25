@@ -404,3 +404,21 @@ struct FileLayout {
         return lo
     }
 }
+
+/// The sidebar's order (folders before files, natural name order), so the
+/// review and the tree list files the same way.
+enum TreeOrder {
+    static func sorted(_ files: [ReviewFile]) -> [ReviewFile] {
+        files.sorted { before($0.path, $1.path) }
+    }
+
+    static func before(_ a: String, _ b: String) -> Bool {
+        let x = a.split(separator: "/"), y = b.split(separator: "/")
+        for k in 0..<min(x.count, y.count) where x[k] != y[k] {
+            let xIsFile = k == x.count - 1, yIsFile = k == y.count - 1
+            if xIsFile != yIsFile { return yIsFile } // a folder comes before a file
+            return String(x[k]).localizedStandardCompare(String(y[k])) == .orderedAscending
+        }
+        return x.count < y.count
+    }
+}

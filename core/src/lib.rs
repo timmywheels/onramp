@@ -11,7 +11,10 @@ mod review;
 mod syntax;
 
 pub use diff::{diff_lines, DiffHunk};
-pub use repo::{changed_files, head_text, head_texts, review_base, set_review_mode, ChangedFile, FileStatus, ReviewBase, ReviewMode};
+pub use repo::{
+    changed_files, head_text, head_texts, list_branches, list_commits, list_worktrees, review_base, review_commits, BranchCommits, review_choice, set_review_choice,
+    set_review_mode, ChangedFile, CommitInfo, FileStatus, ReviewBase, ReviewChoice, ReviewMode, Worktree,
+};
 pub use syntax::{grammar_names, highlight, highlight_names, language_name, set_languages, LanguageConfig};
 pub use review::{load_review, FileBody, FileDiff};
 pub use comments::*;

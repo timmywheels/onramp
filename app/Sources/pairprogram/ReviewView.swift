@@ -1,7 +1,7 @@
 import AppKit
 
 /// The endless scroll: every changed file in one scroll view.
-final class ReviewView: NSView {
+final class ReviewView: NSView, NSPopoverDelegate {
     private let repoPath: String
     let scrollView = NSScrollView()
     let document: ReviewDocumentView
@@ -10,13 +10,22 @@ final class ReviewView: NSView {
     private let progress = ProgressBarView()
     private let foldAllButton = NSButton()
     private let progressLabel = NSTextField(labelWithString: "")
-    private let agentButton = NSButton(title: "Connect an agent…", target: nil, action: nil)
-    private let reviewButton = NSButton(title: "Review changes", target: nil, action: nil)
-    /// Branch (everything since you forked from main, like a PR) vs uncommitted only.
-    private let modeToggle = NSSegmentedControl(labels: ["Branch", "Uncommitted"], trackingMode: .selectOne, target: nil, action: nil)
-    private var base: ReviewBase?
+    private let agentButton = AgentButton()
+    private let reviewButton = CapsuleButton()
+    /// Agents with pairprogram set up (from each agent's CLI; checked in the background).
+    private var configuredAgents: [String] = []
+    private var agentChecks = 0
+    /// What's being reviewed (see `reviewBase`); chosen in the toolbar's Changes menu.
+    private(set) var base: ReviewBase?
+    /// Called after every reload, so the toolbar can show what's loaded.
+    var onBaseChanged: ((ReviewBase?) -> Void)?
     private var statusParts: [(priority: Int, text: NSAttributedString)] = []
-    private let runner = AgentRunner()
+    /// One background agent run per target (Claude Code and Codex can work side by side).
+    private var runners: [AgentRunner.Target: AgentRunner] = [:]
+    private var nextWaiting = 0
+    private var runStates: [(AgentRunner.Target, AgentRunner.State)] {
+        runners.sorted { $0.key.rawValue < $1.key.rawValue }.map { ($0.key, $0.value.state) }
+    }
     private var reviewPopover: NSPopover?
     private var agentTimer: Timer?
     private var loadMs: Double = 0
@@ -43,30 +52,26 @@ final class ReviewView: NSView {
         progressLabel.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
         progressLabel.textColor = .secondaryLabelColor
         progress.toolTip = "Files marked Viewed"
-        agentButton.isBordered = false
         agentButton.target = self
         agentButton.action = #selector(agentButtonClicked)
-        reviewButton.bezelStyle = .push
-        reviewButton.controlSize = .small
-        reviewButton.font = .systemFont(ofSize: 11.5, weight: .medium)
+        reviewButton.setText("Review changes")
         reviewButton.target = self
         reviewButton.action = #selector(showReview)
-        modeToggle.controlSize = .small
-        modeToggle.font = .systemFont(ofSize: 11.5)
-        modeToggle.target = self
-        modeToggle.action = #selector(modeChanged)
-        modeToggle.setToolTip("All changes on this branch, committed or not (like a pull request)", forSegment: 0)
-        modeToggle.setToolTip("Only changes that aren't committed yet", forSegment: 1)
         foldAllButton.isBordered = false
         foldAllButton.imagePosition = .imageOnly
         foldAllButton.target = self
         foldAllButton.action = #selector(toggleFoldAll)
-        for v in [foldAllButton, progress, progressLabel, statusLabel, modeToggle, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
-        runner.onChange = { [weak self] in self?.updateAgents() }
+        for v in [foldAllButton, progress, progressLabel, statusLabel, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
         // Agents come and go (sessions start/end); poll cheaply.
         agentTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.updateAgents() }
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.updateAgents()
+                self.agentChecks += 1
+                if self.agentChecks % 30 == 0 { self.refreshConfiguredAgents() } // once a minute
+            }
         }
+        refreshConfiguredAgents()
 
         document.onChange = { [weak self] in self?.updateStatus(); self?.updateAgents() }
         document.onFileChanged = { [weak self] i in self?.onFileChanged?(i) }
@@ -98,13 +103,14 @@ final class ReviewView: NSView {
         func center(_ v: NSView, x: CGFloat) {
             v.frame.origin = NSPoint(x: x, y: round((h - v.frame.height) / 2) + 0.5)
         }
-        var right = bounds.width - 14
-        for v in [agentButton, reviewButton, modeToggle] as [NSControl] {
-            v.sizeToFit()
+        var right = bounds.width - 8 // 8pt all around: the capsule follows the window's corner
+        for v in [agentButton, reviewButton] {
+            v.fit()
             right -= v.frame.width
-            center(v, x: right)
-            right -= 12
+            v.frame.origin = NSPoint(x: right, y: round((h - v.frame.height) / 2))
+            right -= 8
         }
+        right -= 4
         var left: CGFloat = 10
         foldAllButton.frame = NSRect(x: left, y: round((h - 22) / 2), width: 22, height: 22)
         left = foldAllButton.frame.maxX + 8
@@ -125,8 +131,9 @@ final class ReviewView: NSView {
             let base = try reviewBase(repoRoot: repoPath)
             self.base = base
             document.baseRev = base.rev
-            modeToggle.selectedSegment = base.mode == .branch ? 0 : 1
-            document.setFiles(try loadReview(repoRoot: repoPath, baseRev: base.rev).map(ReviewFile.init))
+            document.readOnly = base.target != nil // a commit isn't on disk: nothing to edit
+            document.setFiles(TreeOrder.sorted(try loadReview(repoRoot: repoPath, baseRev: base.rev, target: base.target).map(ReviewFile.init)))
+            onBaseChanged?(base)
         } catch {
             statusLabel.stringValue = "Error: \(error)"
             return
@@ -171,12 +178,15 @@ final class ReviewView: NSView {
             return a
         }
         var parts: [(priority: Int, text: NSAttributedString)] = [
-            (0, part([("+\(added)", .systemGreen, digits), (" −\(removed)", .systemRed, digits)])),
+            (0, part([("+\(added)", DiffStyle.addedAccent, digits), (" −\(removed)", DiffStyle.deletedAccent, digits)])),
         ]
-        if let base, base.mode == .branch {
-            parts.append((2, part([(base.branch.map { "vs \($0)" } ?? "vs HEAD (no main branch found)", .secondaryLabelColor, font)])))
-            if base.commits > 0 { parts.append((4, part([("\(base.commits) commit\(base.commits == 1 ? "" : "s")", .secondaryLabelColor, font)]))) }
-        } else {
+        switch base?.mode {
+        case .branch?:
+            parts.append((2, part([(base?.branch.map { "vs \($0)" } ?? "vs HEAD (no main branch found)", .secondaryLabelColor, font)])))
+            if let n = base?.commits, n > 0 { parts.append((4, part([("\(n) commit\(n == 1 ? "" : "s")", .secondaryLabelColor, font)]))) }
+        case .commit?:
+            parts.append((2, part([("one commit · read-only", .secondaryLabelColor, font)])))
+        default:
             parts.append((2, part([("uncommitted changes", .secondaryLabelColor, font)])))
         }
         if comments > 0 { parts.append((1, part([("\(comments) open comment\(comments == 1 ? "" : "s")", DiffStyle.accent, font)]))) }
@@ -206,13 +216,26 @@ final class ReviewView: NSView {
         document.setAllCollapsed(document.anyExpanded)
     }
 
-    @objc private func modeChanged() {
-        setMode(modeToggle.selectedSegment == 0 ? .branch : .uncommitted)
-    }
+    func clickAgentForTests() { agentButtonClicked() }
+    var agentLabelForTests: String { agentButton.attributedTitle.string.trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "\u{2007}"))) + " [" + (agentButton.toolTip ?? "") + "]" }
 
     func setMode(_ mode: ReviewMode) {
         try? setReviewMode(repoRoot: repoPath, mode: mode)
         reload()
+    }
+
+    /// Show something else (from the toolbar's Changes menu).
+    func setChoice(_ choice: ReviewChoice) {
+        guard document.dirtyCount == 0 else { return NSSound.beep() } // save first: switching drops editors
+        try? setReviewChoice(repoRoot: repoPath, choice: choice)
+        reload()
+    }
+
+    /// Stop timers and file watchers before this view goes away (switching projects).
+    func close() {
+        agentTimer?.invalidate()
+        agentTimer = nil
+        document.stopWatching()
     }
 
     var statusText: String { statusLabel.stringValue }
@@ -222,39 +245,75 @@ final class ReviewView: NSView {
         updateStatus()
     }
 
+    /// The Agent button. Most urgent state wins: working (blue, pulsing) →
+    /// needs you (yellow) → a run that ended (✓/✗) → connected (green) → none (grey).
     private func updateAgents() {
-        let agents = ConnectedAgents.list(repoRoot: repoPath)
-        var title = agents.isEmpty ? "Connect an agent…" : "● " + agents.joined(separator: ", ") + " connected"
-        var color: NSColor = agents.isEmpty ? .secondaryLabelColor : .systemGreen
-        switch runner.state {
-        case let .running(t): title = "◌ \(t.title) is working on your review…"; color = .controlAccentColor
-        case let .finished(t, ok): title = ok ? "✓ \(t.title) finished · view log" : "✗ \(t.title) failed · view log"; color = ok ? .systemGreen : .systemRed
-        case .idle: break
+        let sessions = ConnectedAgents.sessions(repoRoot: repoPath)
+        let live = Array(Set(sessions.map(\.agent))).sorted()
+        let claims = document.activeClaims
+        let working = Array(Set(sessions.filter(\.isWorking).map(\.agent) + claims.map(\.agent))).sorted()
+        let waiting = document.awaitingYou.count
+        let count = max(configuredAgents.count, live.count)
+
+        var color = count > 0 ? DiffStyle.addedAccent : .tertiaryLabelColor
+        var label = count > 1 ? "Agents (\(count))" : "Agent"
+        var pulsing = false
+        var tip = count == 0 ? "No agent connected. Click to connect one over MCP."
+            : ["Set up: " + (configuredAgents.isEmpty ? "—" : configuredAgents.joined(separator: ", ")),
+               "In a session now: " + (live.isEmpty ? "none" : live.joined(separator: ", "))].joined(separator: "\n")
+        let running = runStates.filter { if case .running = $0.1 { return true } else { return false } }.map(\.0)
+        let finished = runStates.compactMap { t, s -> (AgentRunner.Target, Bool)? in if case let .finished(_, ok) = s { return (t, ok) } else { return nil } }
+        if !running.isEmpty {
+            color = .controlAccentColor; pulsing = true
+            label = running.count == 1 ? "\(running[0].title) working…" : "\(running.count) agents working…"
+            tip = running.map { "\($0.title) is working on your review" }.joined(separator: "\n")
+        } else if !working.isEmpty {
+            color = .controlAccentColor; pulsing = true
+            label = working.count == 1 ? "\(working[0]) working…" : "\(working.count) agents working…"
+            tip = working.map { a in "\(a): \(claims.filter { $0.agent == a }.count) comment(s)" }.joined(separator: "\n")
+        } else if waiting > 0 {
+            color = .systemYellow
+            label = waiting == 1 ? "1 reply for you" : "\(waiting) replies for you"
+            tip = "An agent answered a comment instead of resolving it. Click to see."
+        } else if !finished.isEmpty {
+            let failed = finished.filter { !$0.1 }.map(\.0)
+            color = failed.isEmpty ? DiffStyle.addedAccent : DiffStyle.deletedAccent
+            label = failed.isEmpty ? (finished.count == 1 ? "Agent done" : "Agents done") : (failed.count == 1 ? "\(failed[0].title) failed" : "Agents failed")
+            tip = finished.map { "\($0.0.title) \($0.1 ? "finished" : "failed")" }.joined(separator: "\n") + "\nClick for the log."
         }
         let pending = document.pendingCount
         let reviewTitle = pending > 0 ? "Finish review (\(pending))" : "Review changes"
-        if reviewButton.title != reviewTitle { reviewButton.title = reviewTitle; needsLayout = true }
-        guard agentButton.title != title else { return }
-        agentButton.attributedTitle = NSAttributedString(string: title, attributes: [
-            .foregroundColor: color,
-            .font: NSFont.systemFont(ofSize: 11.5),
-        ])
-        agentButton.toolTip = agents.isEmpty ? "Set up an agent to read and resolve your comments over MCP" : "Connected over MCP. Click for setup."
+        if reviewButton.title != reviewTitle { reviewButton.setText(reviewTitle); needsLayout = true }
+        let key = "\(label)|\(color)|\(pulsing)"
+        guard agentButton.identifier?.rawValue != key else { return }
+        agentButton.identifier = NSUserInterfaceItemIdentifier(key)
+        agentButton.set(label: label, color: color, pulsing: pulsing)
+        agentButton.toolTip = tip
         needsLayout = true
     }
 
     @objc private func agentButtonClicked() {
-        if case .finished = runner.state, let log = runner.logURL { NSWorkspace.shared.open(log); return }
+        let busy = runStates.contains { if case .running = $0.1 { return true } else { return false } }
+        let waiting = document.awaitingYou
+        if !waiting.isEmpty, !busy { // yellow: go to the next reply waiting for you
+            nextWaiting = nextWaiting % waiting.count
+            document.scrollToThread(waiting[nextWaiting])
+            nextWaiting += 1
+            return
+        }
+        let logs = runStates.compactMap { t, s -> URL? in if case .finished = s { return runners[t]?.logURL } else { return nil } }
+        if !busy, !logs.isEmpty { logs.forEach { NSWorkspace.shared.open($0) }; return }
         showConnect()
     }
 
     @objc func showReview() {
-        let vc = ReviewSubmitViewController(pending: document.pendingCount, repo: repoPath)
+        let vc = ReviewSubmitViewController(pending: document.pendingCount, open: document.openCommentCount, repo: repoPath)
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = vc
-        vc.onSubmit = { [weak self] body, verdict, target in
-            if self?.submit(body: body, verdict: verdict, target: target) == true { popover.close() }
+        vc.onSubmit = { [weak self, weak vc] body, verdict, targets in
+            guard let self else { return }
+            if let error = self.submit(body: body, verdict: verdict, targets: targets) { vc?.show(error: error) } else { popover.close() }
         }
         vc.onDiscard = { [weak self] in
             guard let self else { return }
@@ -268,27 +327,49 @@ final class ReviewView: NSView {
     }
 
     /// Publish the pending review and, optionally, start an agent on it.
+    /// Publish the review (and start the agent). Returns an error to show, or nil.
     @discardableResult
-    func submit(body: String, verdict: Verdict, target: AgentRunner.Target) -> Bool {
+    func submit(body: String, verdict: Verdict, targets: [AgentRunner.Target]) -> String? {
         do {
             _ = try submitReview(repoRoot: repoPath, author: document.reviewAuthor, body: body, verdict: verdict)
+        } catch let CoreError.Io(message), let CoreError.Git(message) {
+            return message
         } catch {
-            NSSound.beep()
-            return false
+            return "\(error)"
         }
         document.reloadThreads()
-        if target != .none { runner.run(target, repo: repoPath) }
+        for target in targets where target != .none {
+            let runner = runners[target] ?? AgentRunner()
+            runner.onChange = { [weak self] in self?.updateAgents() }
+            runners[target] = runner
+            runner.run(target, repo: repoPath)
+        }
         updateAgents()
-        return true
+        return nil
     }
 
-    var agentState: AgentRunner.State { runner.state }
+    var agentState: AgentRunner.State { runStates.first?.1 ?? .idle }
 
     @objc func showConnect() {
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = AgentConnectViewController()
+        popover.delegate = self
         popover.show(relativeTo: agentButton.bounds, of: agentButton, preferredEdge: .maxY)
+    }
+
+    /// Connecting/disconnecting happens in the popover: re-check when it closes.
+    func popoverDidClose(_ notification: Notification) { refreshConfiguredAgents() }
+
+    private func refreshConfiguredAgents() {
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let names = AgentIntegration.all.filter { $0.check() == .connected }.map(\.name)
+            DispatchQueue.main.async {
+                guard let self, self.configuredAgents != names else { return }
+                self.configuredAgents = names
+                self.updateAgents()
+            }
+        }
     }
 
     @objc private func didScroll() {
@@ -318,6 +399,40 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     private lazy var author: String = Self.gitUserName(repoPath) ?? "you"
 
     var openCommentCount: Int { allThreads.filter { $0.status == .open }.count }
+    /// Threads an agent is working on right now.
+    var activeClaims: [(agent: String, path: String)] {
+        allThreads.compactMap { t in activeClaim(thread: t).map { ($0.agent, t.path) } }
+    }
+    /// Open threads where someone else (an agent) spoke last: they're waiting on you.
+    var awaitingYou: [Thread] {
+        allThreads.filter { t in
+            guard t.status == .open, activeClaim(thread: t) == nil, let last = t.entries.last(where: { !$0.pending }) else { return false }
+            return last.author != author
+        }
+    }
+
+    /// Bring a comment thread into view (unfolding its file) and flash it.
+    func scrollToThread(_ t: Thread) {
+        guard let i = files.firstIndex(where: { $0.path == t.path }) else { return }
+        if files[i].collapsed { setCollapsed(i, false) }
+        guard let row = files[i].layout.rows.first(where: { if case let .thread(id) = $0.kind { return id == t.id } else { return false } }),
+              let clip = superview as? NSClipView else { return scrollToFile(i) }
+        // Land with the commented line and a little context visible above the box.
+        let y = tops[i] + row.y - FileLayout.headerHeight - 3 * DiffStyle.lineHeight
+        clip.scroll(to: NSPoint(x: 0, y: max(0, min(y, frame.height - clip.bounds.height))))
+        (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
+        layoutSubtreeIfNeeded()
+        threadView(t.id)?.flash()
+    }
+
+    private func setCollapsed(_ i: Int, _ collapsed: Bool) {
+        guard files[i].collapsed != collapsed else { return }
+        files[i].collapsed = collapsed
+        recomputeTops()
+        if let clip = superview as? NSClipView { setFrameSize(NSSize(width: width, height: contentHeight(clip.bounds.height))) }
+        needsLayout = true
+        onChange?()
+    }
     /// Your comments/replies waiting in a review you haven't submitted.
     private(set) var pendingCount = 0
     var reviewAuthor: String { author }
@@ -328,6 +443,9 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     private var reloading = false
     /// Commit the review diffs against (see `reviewBase`); set by ReviewView.reload.
     var baseRev = "HEAD"
+    var repoRootForTests: String { repoPath }
+    /// Showing a commit: files aren't on disk, so no editing and no live reload.
+    var readOnly = false
     private var reloadAgain = false
     var onFileChanged: ((Int) -> Void)?
     var onCurrentFile: ((Int) -> Void)?
@@ -559,7 +677,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     @discardableResult
     func activateEditor(_ i: Int, offset: Int) -> DiffEditor? {
         let file = files[i]
-        guard file.kind == .text, !file.collapsed else { return nil }
+        guard file.kind == .text, !file.collapsed, !readOnly else { return nil }
         var marks: [(String, CFTimeInterval)] = [("start", CACurrentMediaTime())]
         func mark(_ n: String) { marks.append((n, CACurrentMediaTime())) }
         defer {
@@ -752,6 +870,13 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     // MARK: Live reload
 
+    func stopWatching() {
+        treeWatcher?.stop()
+        treeWatcher = nil
+        commentsWatcher?.cancel()
+        commentsWatcher = nil
+    }
+
     /// Agents edit files while you review: reload the diff when the tree changes.
     func watchWorkingTree() {
         treeWatcher?.stop()
@@ -766,15 +891,16 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     /// Load and diff off the main thread, then merge into what's on screen.
     @objc private func reloadFromDisk() {
+        guard !readOnly else { return } // a commit doesn't change with the working tree
         guard !reloading else { reloadAgain = true; return }
         reloading = true
         let repo = repoPath, rev = baseRev
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let diffs = try? loadReview(repoRoot: repo, baseRev: rev)
+            let diffs = try? loadReview(repoRoot: repo, baseRev: rev, target: nil)
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.reloading = false
-                if let diffs { self.merge(diffs.map(ReviewFile.init)) }
+                if let diffs { self.merge(TreeOrder.sorted(diffs.map(ReviewFile.init))) }
                 if self.reloadAgain { self.reloadAgain = false; self.reloadFromDisk() }
             }
         }
@@ -860,6 +986,33 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
             editors[i]?.setReveal(expanded: file.revealed, commentSpace: file.commentSpace, deletedCommentSpace: file.deletedCommentSpace)
         }
         layoutChanged()
+        onThreadsChanged?()
+    }
+
+    /// Called whenever comments change (the comments panel follows).
+    var onThreadsChanged: (() -> Void)?
+
+    /// Every thread for the comments panel: review order, then line; with status.
+    var panelItems: [CommentsPanel.Item] {
+        var items: [CommentsPanel.Item] = []
+        var seen = Set<String>()
+        func status(_ t: Thread) -> CommentsPanel.Status {
+            if t.status == .resolved { return .resolved }
+            if let c = activeClaim(thread: t) { return .working(agent: c.agent) }
+            if t.entries.allSatisfy(\.pending) { return .pending }
+            if let last = t.entries.last(where: { !$0.pending }), last.author != author { return .needsYou }
+            return .open
+        }
+        for f in files {
+            for lt in f.threads.sorted(by: { ($0.line ?? 0) < ($1.line ?? 0) }) {
+                seen.insert(lt.thread.id)
+                items.append(.init(thread: lt.thread, line: lt.line.map { Int($0) + 1 }, status: status(lt.thread)))
+            }
+        }
+        for t in allThreads where !seen.contains(t.id) { // on files no longer in this review
+            items.append(.init(thread: t, line: nil, status: status(t)))
+        }
+        return items
     }
 
     private func relocateThreads(_ i: Int) {

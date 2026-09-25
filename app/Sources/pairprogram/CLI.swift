@@ -14,6 +14,8 @@ enum CLI {
     pairprogram resolve <id> [--note <text>]
                                        mark a thread resolved, optionally with a note
     pairprogram reopen <id>            reopen a resolved thread
+    pairprogram claim <id>             claim a thread before working on it (other agents skip it)
+    pairprogram release <id>           give a claimed thread back
     pairprogram extensions             list installed extensions and any problems loading them
     pairprogram prompt                 print instructions to paste into any agent
     pairprogram mcp                    run as an MCP server (stdio) for agents that speak MCP,
@@ -22,7 +24,7 @@ enum CLI {
     Options: -C <dir> (repo, default: current dir)  --author <name> (default: $PAIRPROGRAM_AUTHOR or "agent")
     """
 
-    static let commands: Set<String> = ["comments", "reply", "resolve", "reopen", "prompt", "extensions", "mcp", "help", "--help", "-h"]
+    static let commands: Set<String> = ["comments", "reply", "resolve", "reopen", "claim", "release", "prompt", "extensions", "mcp", "help", "--help", "-h"]
 
     static func run(_ argv: [String]) -> Int32? {
         guard let command = argv.first, commands.contains(command) else { return nil }
@@ -65,6 +67,11 @@ enum CLI {
                 guard let id = args.first else { return fail("usage: pairprogram \(command) <id>") }
                 let t = try setResolved(repoRoot: try repoRoot(dir), id: id, resolved: command == "resolve", author: author, note: note)
                 print("\(command == "resolve" ? "resolved" : "reopened") \(t.id)")
+            case "claim", "release":
+                guard let id = args.first else { return fail("usage: pairprogram \(command) <id>") }
+                let root = try repoRoot(dir)
+                let t = command == "claim" ? try claimThread(repoRoot: root, id: id, agent: author) : try releaseThread(repoRoot: root, id: id, agent: author)
+                print("\(command == "claim" ? "claimed" : "released") \(t.id)")
             default:
                 return nil
             }

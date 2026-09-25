@@ -46,10 +46,10 @@ enum FileHeader {
 
         // Status pill.
         let (letter, color): (String, NSColor) = switch file.status {
-        case .modified: ("M", .systemOrange)
-        case .added: ("A", .systemGreen)
-        case .deleted: ("D", .systemRed)
-        case .untracked: ("U", .systemTeal)
+        case .modified: ("M", DiffStyle.modifiedAccent)
+        case .added: ("A", DiffStyle.addedAccent)
+        case .deleted: ("D", DiffStyle.deletedAccent)
+        case .untracked: ("U", DiffStyle.addedAccent)
         }
         let pill = CGRect(x: 30, y: mid - 8, width: 18, height: 16)
         color.withAlphaComponent(0.18).setFill()
@@ -70,8 +70,8 @@ enum FileHeader {
             details.append(NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color]))
         }
         if file.kind == .text || file.status == .deleted {
-            add("+\(file.added)", .systemGreen, numbers)
-            add("  −\(file.removed)", .systemRed, numbers)
+            add("+\(file.added)", DiffStyle.addedAccent, numbers)
+            add("  −\(file.removed)", DiffStyle.deletedAccent, numbers)
         }
         if file.openThreadCount > 0 { add("   ● \(file.openThreadCount) open", DiffStyle.accent) }
         if dirty { add("   ● unsaved", DiffStyle.accent) }

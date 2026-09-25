@@ -2,10 +2,13 @@ import AppKit
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let repoPath: String
+    private var repoPath: String
     private var window: NSWindow!
     private var reviewView: ReviewView!
     private var sidebar: FileTreeSidebar!
+    private var toolbar: SourceToolbar!
+    private var commentsPanel = CommentsPanel()
+    private var commentsItem: NSSplitViewItem?
 
     init(repoPath: String) {
         self.repoPath = repoPath
@@ -22,8 +25,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             defer: false
         )
         window.title = "pairprogram — \((repoPath as NSString).lastPathComponent)"
+        toolbar = SourceToolbar(repoPath: repoPath)
+        toolbar.onOpenRepo = { [weak self] path in self?.open(repo: path) }
+        toolbar.onToggleComments = { [weak self] in self?.toggleComments(nil) }
+        toolbar.install(in: window)
+        RecentProjects.add(repoPath)
 
         reviewView = ReviewView(repoPath: repoPath)
+        toolbar.review = reviewView
+        reviewView.onBaseChanged = { [weak self] _ in self?.toolbar.refreshTitles() }
         sidebar = FileTreeSidebar()
         wireSidebar()
         // A content view controller resizes the window to its fitting size (tiny, since
@@ -44,6 +54,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         reviewView.reload()
     }
 
+    /// Show another project or worktree in this window.
+    func open(repo path: String) {
+        guard path != repoPath else { return }
+        guard reviewView.document.dirtyCount == 0 else { return NSSound.beep() } // save first (⌘S)
+        reviewView.close()
+        repoPath = path
+        RecentProjects.add(path)
+        window.title = "pairprogram — \((path as NSString).lastPathComponent)"
+        reviewView = ReviewView(repoPath: path)
+        reviewView.onBaseChanged = { [weak self] _ in self?.toolbar.refreshTitles() }
+        sidebar = FileTreeSidebar()
+        wireSidebar()
+        let frame = window.frame // a new content view controller resizes the window to fit
+        window.contentViewController = makeSplit()
+        window.setFrame(frame, display: true)
+        toolbar.repoPath = path
+        toolbar.review = reviewView
+        reviewView.reload()
+    }
+
+    @objc func openFolder(_ sender: Any?) { toolbar.openFolder(sender) }
+
+    /// Self-test hook: the toolbar, and a way to switch projects like its menu does.
+    static var current: AppDelegate? { NSApp.delegate as? AppDelegate }
+    var sourceToolbar: SourceToolbar { toolbar }
+    var currentReview: ReviewView { reviewView }
+
     private func makeSplit() -> NSSplitViewController {
         let split = NSSplitViewController()
         let side = NSSplitViewItem(sidebarWithViewController: sidebar)
@@ -54,8 +91,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         content.view = reviewView
         split.addSplitViewItem(side)
         split.addSplitViewItem(NSSplitViewItem(viewController: content))
+        commentsPanel = CommentsPanel()
+        wireComments()
+        let comments = NSSplitViewItem(inspectorWithViewController: commentsPanel)
+        comments.minimumThickness = 240
+        comments.maximumThickness = 420
+        comments.canCollapse = true
+        comments.isCollapsed = UserDefaults.standard.bool(forKey: "pairprogram.commentsHidden")
+        split.addSplitViewItem(comments)
+        commentsItem = comments
         split.splitView.autosaveName = "pairprogram.split"
         return split
+    }
+
+    private func wireComments() {
+        commentsPanel.onSelect = { [weak self] t in self?.reviewView.document.scrollToThread(t) }
+        reviewView.document.onThreadsChanged = { [weak self] in
+            guard let self else { return }
+            let items = self.reviewView.document.panelItems
+            self.commentsPanel.update(items)
+            self.toolbar.setCommentCount(items.filter { $0.status != .resolved }.count)
+        }
+    }
+
+    @objc func toggleComments(_ sender: Any?) {
+        guard let item = commentsItem else { return }
+        item.animator().isCollapsed.toggle()
+        UserDefaults.standard.set(item.isCollapsed, forKey: "pairprogram.commentsHidden")
     }
 
     private func wireSidebar() {
@@ -112,6 +174,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.item(withTitle: "Show Resolved Comments")?.state = ReviewFile.showResolved ? .on : .off
+        menu.item(withTitle: "Show Comments")?.state = commentsItem?.isCollapsed == false ? .on : .off
         let style = Style.shared
         if let appearance = menu.item(withTitle: "Appearance")?.submenu {
             appearance.removeAllItems()
@@ -167,6 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(withTitle: "Open Folder…", action: #selector(openFolder(_:)), keyEquivalent: "o")
+        fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Save", action: #selector(saveDocument(_:)), keyEquivalent: "s")
         fileMenu.addItem(withTitle: "Reload", action: #selector(reloadReview(_:)), keyEquivalent: "r")
         fileItem.submenu = fileMenu
@@ -205,6 +270,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let expand = viewMenu.addItem(withTitle: "Expand All Files", action: #selector(expandAll(_:)), keyEquivalent: String(UnicodeScalar(NSRightArrowFunctionKey)!))
         expand.keyEquivalentModifierMask = [.option, .command]
         viewMenu.addItem(.separator())
+        let comments = viewMenu.addItem(withTitle: "Show Comments", action: #selector(toggleComments(_:)), keyEquivalent: "0")
+        comments.keyEquivalentModifierMask = [.option, .command]
         viewMenu.addItem(withTitle: "Show Resolved Comments", action: #selector(toggleResolved(_:)), keyEquivalent: "R")
         viewMenu.addItem(.separator())
         let toggle = viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "s")

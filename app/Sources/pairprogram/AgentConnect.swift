@@ -3,19 +3,45 @@ import AppKit
 /// Agents connected to this repo through `pairprogram mcp` (each MCP session
 /// writes `agent-<pid>.json` next to comments.json while it runs).
 enum ConnectedAgents {
-    static func list(repoRoot: String) -> [String] {
+    /// A live agent session and what it did last (its MCP server records each tool call).
+    struct Session {
+        let agent: String
+        let lastActivity: Date?
+        let lastAction: String?
+        /// Called a tool in the last 20 seconds.
+        var isWorking: Bool { lastActivity.map { Date().timeIntervalSince($0) < 20 } ?? false }
+    }
+
+    static func sessions(repoRoot: String) -> [Session] {
         guard let comments = try? commentsPath(repoRoot: repoRoot) else { return [] }
         let dir = (comments as NSString).deletingLastPathComponent
         let names = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
-        var agents: [String] = []
+        var sessions: [Session] = []
         for name in names where name.hasPrefix("agent-") && name.hasSuffix(".json") {
             let path = (dir as NSString).appendingPathComponent(name)
             guard let data = FileManager.default.contents(atPath: path),
                   let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let pid = info["pid"] as? Int, let agent = info["agent"] as? String else { continue }
-            if kill(pid_t(pid), 0) == 0 { agents.append(agent) } else { try? FileManager.default.removeItem(atPath: path) } // stale
+            guard kill(pid_t(pid), 0) == 0 else { try? FileManager.default.removeItem(atPath: path); continue } // stale
+            sessions.append(Session(agent: agent, lastActivity: (info["last_activity"] as? Int).map { Date(timeIntervalSince1970: TimeInterval($0)) },
+                                    lastAction: info["last_action"] as? String))
         }
-        return Array(Set(agents)).sorted()
+        return sessions.sorted { $0.agent < $1.agent }
+    }
+
+    static func list(repoRoot: String) -> [String] {
+        Array(Set(sessions(repoRoot: repoRoot).map(\.agent))).sorted()
+    }
+}
+
+/// Each agent's color, the same everywhere it appears (stable across launches).
+enum AgentColor {
+    private static let palette: [NSColor] = [.systemPurple, .systemTeal, .systemPink, .systemIndigo, .systemMint, .systemOrange, .systemCyan, .systemBrown]
+
+    static func of(_ agent: String) -> NSColor {
+        var h: UInt64 = 0xcbf2_9ce4_8422_2325
+        for b in agent.lowercased().utf8 { h = (h ^ UInt64(b)) &* 0x100_0000_01b3 }
+        return palette[Int(h % UInt64(palette.count))]
     }
 }
 

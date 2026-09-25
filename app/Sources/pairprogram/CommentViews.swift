@@ -18,9 +18,18 @@ enum CommentMetrics {
     static var composerRowHeight: CGFloat { 2 * margin + 2 * padding + inputHeight + 6 + footerHeight }
     static var replyHeight: CGFloat { inputHeight + 6 + footerHeight }
 
+    /// A comment body, rendered from Markdown (agents write it): **bold**,
+    /// *italic*, `code`, links, lists, headings and fenced code blocks. Cached,
+    /// since drawing and sizing both ask for it.
     static func body(_ s: String) -> NSAttributedString {
-        NSAttributedString(string: s.trimmingCharacters(in: .whitespacesAndNewlines), attributes: [.font: bodyFont, .foregroundColor: DiffStyle.text])
+        let key = "\(bodyFont.pointSize)|\(DiffStyle.isDark)|\(s)" as NSString
+        if let cached = bodyCache.object(forKey: key) { return cached }
+        let rendered = CommentMarkdown.render(s.trimmingCharacters(in: .whitespacesAndNewlines), font: bodyFont, color: DiffStyle.text)
+        bodyCache.setObject(rendered, forKey: key)
+        return rendered
     }
+
+    nonisolated(unsafe) private static let bodyCache = NSCache<NSString, NSAttributedString>()
 
     static func bodyHeight(_ s: String) -> CGFloat {
         ceil(body(s).boundingRect(with: NSSize(width: textWidth, height: .greatestFiniteMagnitude),
@@ -210,6 +219,9 @@ final class CommentThreadView: NSView {
         self.me = me
         super.init(frame: .zero)
         wantsLayer = true
+        claimDot.cornerRadius = 3.5
+        claimDot.isHidden = true
+        layer?.addSublayer(claimDot)
         for b in [reply, resolve] {
             b.bezelStyle = .rounded
             b.controlSize = .small
@@ -334,6 +346,17 @@ final class CommentThreadView: NSView {
             NSAttributedString(string: banner.joined(separator: " · "), attributes: meta).draw(at: NSPoint(x: p, y: y))
             y += CommentMetrics.metaHeight + 4
         }
+        if let claim = activeClaim(thread: t) {
+            // "◉ codex · working", right-aligned on the first line, in the agent's color; the dot pulses.
+            let color = AgentColor.of(claim.agent)
+            let badge = NSAttributedString(string: "\(claim.agent) · working", attributes: [.font: CommentMetrics.metaFont, .foregroundColor: color])
+            let size = badge.size()
+            let x = bounds.width - p - 24 - size.width
+            badge.draw(at: NSPoint(x: x, y: y + 1))
+            showClaimDot(color: color, frame: CGRect(x: x - 11, y: y + 1 + (size.height - 7) / 2, width: 7, height: 7))
+        } else {
+            showClaimDot(color: nil, frame: .zero)
+        }
         let when = RelativeDateTimeFormatter()
         when.unitsStyle = .short
         for (k, e) in t.entries.enumerated() {
@@ -355,6 +378,53 @@ final class CommentThreadView: NSView {
         }
     }
 
+    /// Draw the eye here: the accent border fades out over a second.
+    func flash() {
+        guard let layer else { return }
+        let ring = CALayer()
+        ring.frame = bounds.insetBy(dx: 0.5, dy: 0.5)
+        ring.cornerRadius = 6
+        ring.borderWidth = 2
+        effectiveAppearance.performAsCurrentDrawingAppearance { ring.borderColor = DiffStyle.accent.cgColor }
+        layer.addSublayer(ring)
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0
+        fade.beginTime = CACurrentMediaTime() + 0.6
+        fade.duration = 0.8
+        fade.fillMode = .backwards
+        ring.opacity = 0
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { ring.removeFromSuperlayer() }
+        ring.add(fade, forKey: "fade")
+        CATransaction.commit()
+    }
+
+    private let claimDot = CALayer()
+
+    private func showClaimDot(color: NSColor?, frame: CGRect) {
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        guard let color else {
+            claimDot.isHidden = true
+            claimDot.removeAnimation(forKey: "pulse")
+            return
+        }
+        claimDot.isHidden = false
+        claimDot.frame = frame // flipped view: layer coordinates match
+        effectiveAppearance.performAsCurrentDrawingAppearance { claimDot.backgroundColor = color.cgColor }
+        guard claimDot.animation(forKey: "pulse") == nil else { return }
+        let pulse = CABasicAnimation(keyPath: "opacity")
+        pulse.fromValue = 1
+        pulse.toValue = 0.25
+        pulse.duration = 0.8
+        pulse.autoreverses = true
+        pulse.repeatCount = .infinity
+        pulse.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        claimDot.add(pulse, forKey: "pulse")
+    }
+
     @objc private func pencilClicked(_ sender: NSButton) { onStartEdit?(sender.tag) }
     @objc private func replyClicked() { onStartReply?() }
     @objc private func resolveClicked() { onToggleResolved?() }
@@ -369,5 +439,79 @@ private extension NSView {
         (focused ? DiffStyle.accent : DiffStyle.commentBorder).setStroke()
         path.lineWidth = 1
         path.stroke()
+    }
+}
+
+/// Markdown for comment bodies. Inline syntax is parsed by Foundation; block
+/// structure (lists, headings, code fences) is handled line by line so line
+/// breaks are kept exactly as written.
+enum CommentMarkdown {
+    static func render(_ text: String, font: NSFont, color: NSColor) -> NSAttributedString {
+        let out = NSMutableAttributedString()
+        let code = NSFont.monospacedSystemFont(ofSize: font.pointSize - 1, weight: .regular)
+        let codeBackground = color.withAlphaComponent(0.08)
+        var inFence = false
+        let lines = text.components(separatedBy: "\n")
+        for (n, raw) in lines.enumerated() {
+            let newline = n < lines.count - 1 ? "\n" : ""
+            let trimmed = raw.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") { inFence.toggle(); continue }
+            if inFence {
+                out.append(NSAttributedString(string: raw + newline, attributes: [.font: code, .foregroundColor: color, .backgroundColor: codeBackground]))
+                continue
+            }
+            let para = NSMutableParagraphStyle()
+            para.paragraphSpacing = 1
+            var line = raw
+            var lineFont = font
+            if let m = trimmed.range(of: #"^#{1,6}\s+"#, options: .regularExpression) {
+                line = String(trimmed[m.upperBound...])
+                lineFont = .systemFont(ofSize: font.pointSize, weight: .semibold)
+            } else if let m = trimmed.range(of: #"^([-*+]|\d+[.)])\s+"#, options: .regularExpression) {
+                // Hanging indent: wrapped lines line up with the text, not the marker.
+                let marker = trimmed[m].trimmingCharacters(in: .whitespaces)
+                let bullet = marker.first!.isNumber ? marker : "•"
+                let indent = CGFloat(raw.prefix { $0 == " " }.count / 2) * 14
+                let prefix = bullet + "\u{00a0}"
+                let width = (prefix as NSString).size(withAttributes: [.font: font]).width + 2
+                para.firstLineHeadIndent = indent
+                para.headIndent = indent + width
+                para.tabStops = [NSTextTab(textAlignment: .left, location: indent + width)]
+                line = prefix + "\t" + trimmed[m.upperBound...]
+            }
+            out.append(inline(line + newline, font: lineFont, code: code, codeBackground: codeBackground, color: color, paragraph: para))
+        }
+        return out
+    }
+
+    private static func inline(_ s: String, font: NSFont, code: NSFont, codeBackground: NSColor, color: NSColor, paragraph: NSParagraphStyle) -> NSAttributedString {
+        let options = AttributedString.MarkdownParsingOptions(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        guard let parsed = try? AttributedString(markdown: s, options: options) else {
+            return NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color, .paragraphStyle: paragraph])
+        }
+        let out = NSMutableAttributedString()
+        for run in parsed.runs {
+            let text = String(parsed[run.range].characters)
+            var attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color, .paragraphStyle: paragraph]
+            let intent = run.inlinePresentationIntent ?? []
+            if intent.contains(.code) {
+                attrs[.font] = code
+                attrs[.backgroundColor] = codeBackground
+            } else {
+                var traits: NSFontDescriptor.SymbolicTraits = []
+                if intent.contains(.stronglyEmphasized) { traits.insert(.bold) }
+                if intent.contains(.emphasized) { traits.insert(.italic) }
+                if !traits.isEmpty {
+                    attrs[.font] = NSFont(descriptor: font.fontDescriptor.withSymbolicTraits(traits), size: font.pointSize) ?? font
+                }
+            }
+            if intent.contains(.strikethrough) { attrs[.strikethroughStyle] = NSUnderlineStyle.single.rawValue }
+            if let link = run.link {
+                attrs[.link] = link
+                attrs[.foregroundColor] = DiffStyle.accent
+            }
+            out.append(NSAttributedString(string: text, attributes: attrs))
+        }
+        return out
     }
 }
