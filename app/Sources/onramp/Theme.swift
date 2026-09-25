@@ -67,8 +67,8 @@ struct Theme: Codable {
         "added_background": "#2ea04329", "deleted_background": "#f8514929", "deleted_text": "#e6e6e6bf",
         "fold_background": "#ffffff0d", "fold_text": "#8b8b8b",
         "header_background": "#262626", "header_text": "#e6e6e6", "separator": "#ffffff1a",
-        "caret": "#4c9aff", "current_line": "#ffffff0a", "hover": "#ffffff09",
-        "comment_background": "#262a31", "comment_border": "#3d4452", "accent": "#4c9aff",
+        "caret": "#e6e6e6", "current_line": "#ffffff0a", "hover": "#ffffff09",
+        "comment_background": "#262626", "comment_border": "#3a3a3a", "accent": "#c8c8c8",
         "added_accent": "#3fb950", "deleted_accent": "#f85149", "modified_accent": "#d29922",
     ], syntax: [ // One Dark
         "keyword": "#c678dd", "string": "#98c379", "string.special": "#56b6c2", "escape": "#56b6c2",
@@ -84,8 +84,8 @@ struct Theme: Codable {
         "added_background": "#1a7f3724", "deleted_background": "#cf222e1f", "deleted_text": "#1f2328b3",
         "fold_background": "#f6f8fa", "fold_text": "#57606a",
         "header_background": "#f6f8fa", "header_text": "#1f2328", "separator": "#d0d7de",
-        "caret": "#0969da", "current_line": "#0000000a", "hover": "#0000000a",
-        "comment_background": "#f6f8fa", "comment_border": "#d0d7de", "accent": "#0969da",
+        "caret": "#1f2328", "current_line": "#0000000a", "hover": "#0000000a",
+        "comment_background": "#f6f6f6", "comment_border": "#d8d8d8", "accent": "#3b3f45",
         "added_accent": "#1a7f37", "deleted_accent": "#cf222e", "modified_accent": "#9a6700",
     ], syntax: [ // One Light
         "keyword": "#a626a4", "string": "#50a14f", "string.special": "#0184bc", "escape": "#0184bc",

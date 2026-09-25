@@ -515,6 +515,7 @@ enum CommentMarkdown {
             if let link = run.link {
                 attrs[.link] = link
                 attrs[.foregroundColor] = DiffStyle.accent
+                attrs[.underlineStyle] = NSUnderlineStyle.single.rawValue // a link without relying on colour
             }
             out.append(NSAttributedString(string: text, attributes: attrs))
         }

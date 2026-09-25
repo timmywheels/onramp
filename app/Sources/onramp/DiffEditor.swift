@@ -35,12 +35,12 @@ enum DiffStyle {
     nonisolated(unsafe) static var headerBackground = NSColor.windowBackgroundColor
     nonisolated(unsafe) static var headerText = NSColor.labelColor
     nonisolated(unsafe) static var separator = NSColor.separatorColor
-    nonisolated(unsafe) static var caret = NSColor.controlAccentColor
+    nonisolated(unsafe) static var caret = NSColor.textColor
     nonisolated(unsafe) static var currentLine = NSColor.clear
     nonisolated(unsafe) static var hover = NSColor.clear
     nonisolated(unsafe) static var commentBackground = NSColor.controlBackgroundColor
     nonisolated(unsafe) static var commentBorder = NSColor.separatorColor
-    nonisolated(unsafe) static var accent = NSColor.controlAccentColor
+    nonisolated(unsafe) static var accent = NSColor.labelColor
     /// Selected rows and segments: a neutral graphite wash, not the system blue.
     nonisolated(unsafe) static var selection = NSColor(name: "onramp.selection") {
         $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 1, alpha: 0.13) : NSColor(white: 0, alpha: 0.085)

@@ -17,7 +17,7 @@ final class HoverOverlay: NSView {
         DiffStyle.hover.setFill()
         bounds.fill()
         let r = plusRect
-        DiffStyle.accent.setFill()
+        DiffStyle.primaryButton.setFill()
         NSBezierPath(roundedRect: r, xRadius: 4, yRadius: 4).fill()
         let plus = NSBezierPath()
         let inset: CGFloat = 4

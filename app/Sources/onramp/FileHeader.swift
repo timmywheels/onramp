@@ -101,7 +101,7 @@ enum FileHeader {
         let box = CGRect(x: rect.minX, y: mid - checkbox / 2, width: checkbox, height: checkbox)
         let path = NSBezierPath(roundedRect: box.insetBy(dx: 0.5, dy: 0.5), xRadius: 3.5, yRadius: 3.5)
         if checked {
-            DiffStyle.accent.setFill()
+            DiffStyle.primaryButton.setFill() // graphite: the white tick reads on it in any theme
             path.fill()
             let tick = NSBezierPath()
             tick.move(to: NSPoint(x: box.minX + 3.5, y: box.midY + 0.5))

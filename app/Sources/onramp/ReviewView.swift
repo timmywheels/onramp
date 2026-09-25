@@ -631,11 +631,11 @@ final class ReviewView: NSView, NSPopoverDelegate {
         let running = runStates.filter { if case .running = $0.1 { return true } else { return false } }.map(\.0)
         let finished = runStates.compactMap { t, s -> (AgentRunner.Target, Bool)? in if case let .finished(_, ok) = s { return (t, ok) } else { return nil } }
         if !running.isEmpty {
-            color = .controlAccentColor; pulsing = true
+            color = DiffStyle.accent; pulsing = true
             label = running.count == 1 ? "\(running[0].title) working…" : "\(running.count) agents working…"
             tip = running.map { "\($0.title) is working on your review" }.joined(separator: "\n")
         } else if !working.isEmpty {
-            color = .controlAccentColor; pulsing = true
+            color = DiffStyle.accent; pulsing = true
             label = working.count == 1 ? "\(working[0]) working…" : "\(working.count) agents working…"
             tip = working.map { a in "\(a): \(claims.filter { $0.agent == a }.count) comment(s)" }.joined(separator: "\n")
         } else if waiting > 0 {
