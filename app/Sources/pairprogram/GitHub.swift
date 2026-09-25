@@ -257,6 +257,43 @@ enum GitHub {
         _ = try gh(["pr", "merge", String(number), "--\(method.rawValue)"] + (deleteBranch ? ["--delete-branch"] : []), repo: repo)
     }
 
+    // MARK: CI failures → review threads
+
+    nonisolated(unsafe) private static var slugs: [String: String] = [:]
+
+    /// "owner/name" of the repo's GitHub remote.
+    static func slug(repo: String) throws -> String {
+        if let s = slugs[repo] { return s }
+        let s = String(decoding: try gh(["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], repo: repo), as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        slugs[repo] = s
+        return s
+    }
+
+    /// Failing check runs' annotations on commit `sha`, and whether every check has finished.
+    static func ciFindings(repo: String, sha: String) throws -> (findings: [CiFinding], complete: Bool) {
+        struct Runs: Decodable { let check_runs: [Run] }
+        struct Run: Decodable { let id: Int; let name: String; let status: String; let conclusion: String?; let output: Output }
+        struct Output: Decodable { let annotations_count: Int }
+        struct Annotation: Decodable { let path: String; let start_line: Int; let annotation_level: String; let title: String?; let message: String }
+        let s = try slug(repo: repo)
+        let runs = try JSONDecoder().decode(Runs.self, from: gh(["api", "repos/\(s)/commits/\(sha)/check-runs?per_page=100"], repo: repo)).check_runs
+        let complete = runs.allSatisfy { $0.status == "completed" }
+        let failing = runs.filter { ["failure", "timed_out", "action_required"].contains($0.conclusion ?? "") && $0.output.annotations_count > 0 }
+        var findings: [CiFinding] = []
+        var texts: [String: String?] = [:]
+        for run in failing.prefix(10) {
+            let notes = try JSONDecoder().decode([Annotation].self, from: gh(["api", "repos/\(s)/check-runs/\(run.id)/annotations?per_page=100"], repo: repo))
+            for a in notes where a.annotation_level != "notice" {
+                if texts[a.path] == nil { texts[a.path] = fileAt(repoRoot: repo, rev: sha, path: a.path) }
+                guard let text = texts[a.path] ?? nil, a.start_line >= 1 else { continue } // not a file in the repo (e.g. ".github")
+                findings.append(CiFinding(check: run.name, path: a.path, line: UInt32(a.start_line - 1), text: text,
+                                          level: a.annotation_level, title: a.title ?? "", message: a.message))
+            }
+        }
+        return (findings, complete)
+    }
+
     /// "123", "#123" or a PR URL → 123.
     static func number(from text: String) -> Int? {
         let t = text.trimmingCharacters(in: .whitespaces)

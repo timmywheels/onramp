@@ -49,6 +49,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHighResolutionCapable</key><true/>
   <key>NSPrincipalClass</key><string>NSApplication</string>
   <key>NSHumanReadableCopyright</key><string>© $(date +%Y) Tim Wheeler</string>
+  <key>CFBundleURLTypes</key>
+  <array><dict>
+    <key>CFBundleURLName</key><string>com.timwheeler.pairprogram</string>
+    <key>CFBundleURLSchemes</key><array><string>pairprogram</string></array>
+  </dict></array>
   <key>CFBundleDocumentTypes</key>
   <array><dict>
     <key>CFBundleTypeName</key><string>Folder</string>

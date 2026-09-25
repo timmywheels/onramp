@@ -108,6 +108,47 @@ enum SelfTest {
             }
             return
         }
+        if mode == "ci" {
+            Task { @MainActor in
+                let doc = review.document, repo = doc.repoRootForTests
+                if let slug = ProcessInfo.processInfo.environment["PP_CI_SHA"] {
+                    do {
+                        let r = try GitHub.ciFindings(repo: repo, sha: slug)
+                        log("real CI: \(r.findings.count) findings (complete \(r.complete))")
+                    } catch { log("real CI error: \(error)") }
+                    log("ready"); return
+                }
+                let f = doc.files.first { $0.path.hasSuffix("invoice.routes.ts") }!
+                let finding = CiFinding(check: "lint", path: f.path, line: 17, text: f.newText as String, level: "failure",
+                                        title: "@typescript-eslint/no-floating-promises",
+                                        message: "Promises must be awaited, end with a call to .catch, or be explicitly marked as ignored with the `void` operator.")
+                let s = try! syncCiThreads(repoRoot: repo, findings: [finding], complete: true)
+                log("synced: +\(s.added) reopened \(s.reopened) resolved \(s.resolved)")
+                doc.reloadThreads()
+                AppDelegate.current?.front?.showComments(nil)
+                let i = doc.files.firstIndex { $0.path == f.path }!
+                _ = frame(review.scrollView, to: max(0, doc.frame(ofFile: i).minY + 200))
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                log("agent button: '\(review.agentLabelForTests)'")
+                log("window id \(review.window!.windowNumber)")
+                log("ready")
+            }
+            return
+        }
+        if mode == "link" {
+            Task { @MainActor in
+                guard let app = AppDelegate.current else { return log("setup") }
+                let repo = review.document.repoRootForTests
+                log("clone match: sharkdp/hexyl → \(Clones.matches(repo, "sharkdp/hexyl")), other/repo → \(Clones.matches(repo, "other/repo"))")
+                UserDefaults.standard.set(repo, forKey: "pairprogram.clone.sharkdp/hexyl") // as if found before
+                DeepLinks.handle(URL(string: "pairprogram://pr?repo=sharkdp/hexyl&number=286")!, app: app)
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                log("after link: \(app.tabCount) tabs · front '\(app.front?.window?.title ?? "")' · \(app.front?.review.document.files.count ?? 0) files")
+                UserDefaults.standard.removeObject(forKey: "pairprogram.clone.sharkdp/hexyl")
+                log("ready")
+            }
+            return
+        }
         if mode == "prtabs" {
             Task { @MainActor in
                 guard let app = AppDelegate.current, let first = app.front else { return log("setup") }

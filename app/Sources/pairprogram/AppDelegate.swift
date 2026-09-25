@@ -75,10 +75,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         open(tabFor: repo)
     }
 
-    /// Folders dropped on the Dock icon (or "Open With").
+    /// Folders dropped on the Dock icon ("Open With"), and pairprogram:// links (e.g. from Stoplight).
     func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls { if let root = RecentProjects.repoRoot(of: url.path) { open(tabFor: root) } }
+        for url in urls {
+            if url.scheme == "pairprogram" { DeepLinks.handle(url, app: self); continue }
+            if let root = RecentProjects.repoRoot(of: url.path) { open(tabFor: root) }
+        }
     }
+
+    func openProject(_ root: String) { open(tabFor: root) }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if controllers.isEmpty { chooseFirstProject() }

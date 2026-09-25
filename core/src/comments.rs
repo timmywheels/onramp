@@ -74,6 +74,79 @@ pub struct Thread {
     /// An agent working on this thread right now (see `claim_thread`).
     #[serde(default)]
     pub claim: Option<Claim>,
+    /// Where it came from when not a person: "ci:<key>" for a CI failure.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// One failing CI annotation (a check run's file + line + message).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct CiFinding {
+    pub check: String,
+    pub path: String,
+    pub line: u32, // 0-based
+    /// The file as CI saw it (to anchor the thread).
+    pub text: String,
+    pub level: String, // "failure" | "warning"
+    pub title: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct CiSync {
+    pub added: u32,
+    pub reopened: u32,
+    pub resolved: u32,
+}
+
+fn ci_key(f: &CiFinding) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in format!("{}|{}|{}|{}", f.check, f.path, f.text.lines().nth(f.line as usize).unwrap_or("").trim(), f.message).bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    format!("ci:{h:016x}")
+}
+
+/// Mirror CI failures as review threads: new failures become threads
+/// ("CI · <check>"), ones that come back reopen, and — when `complete` (every
+/// check finished) — threads CI no longer reports are resolved.
+#[uniffi::export]
+pub fn sync_ci_threads(repo_root: String, findings: Vec<CiFinding>, complete: bool) -> Result<CiSync, CoreError> {
+    let mut sync = CiSync { added: 0, reopened: 0, resolved: 0 };
+    let keys: Vec<String> = findings.iter().map(ci_key).collect();
+    for (f, key) in findings.iter().zip(&keys) {
+        let existing = load_threads(repo_root.clone())?.into_iter().find(|t| t.source.as_deref() == Some(key.as_str()));
+        match existing {
+            Some(t) if t.status == ThreadStatus::Open => {}
+            Some(t) => {
+                set_resolved(repo_root.clone(), t.id.clone(), false, format!("CI · {}", f.check), Some("Failing again.".into()))?;
+                sync.reopened += 1;
+            }
+            None => {
+                let heading = if f.title.trim().is_empty() { format!("{} {}", f.check, f.level) } else { f.title.trim().to_string() };
+                let body = format!("**{heading}**\n\n```\n{}\n```", f.message.trim());
+                let t = add_thread(repo_root.clone(), f.path.clone(), f.text.clone(), f.line, false, format!("CI · {}", f.check), body, false)?;
+                let key = key.clone();
+                modify(&repo_root, |store| {
+                    if let Some(s) = store.threads.iter_mut().find(|s| s.id == t.id) {
+                        s.source = Some(key);
+                    }
+                    Ok(())
+                })?;
+                sync.added += 1;
+            }
+        }
+    }
+    if complete {
+        for t in load_threads(repo_root.clone())? {
+            let is_ci = t.source.as_deref().is_some_and(|s| s.starts_with("ci:"));
+            if is_ci && t.status == ThreadStatus::Open && !keys.contains(t.source.as_ref().unwrap()) {
+                set_resolved(repo_root.clone(), t.id.clone(), true, "CI".into(), Some("No longer reported by CI.".into()))?;
+                sync.resolved += 1;
+            }
+        }
+    }
+    Ok(sync)
 }
 
 /// "This agent is on it": other agents skip claimed threads. Refreshed by the
@@ -218,6 +291,7 @@ pub fn add_thread(repo_root: String, path: String, text: String, line: u32, old_
             entries: vec![Entry { author, body, created_at: now(), pending }],
             resolved_by: None,
             claim: None,
+            source: None,
         };
         store.threads.push(thread.clone());
         Ok(thread)
@@ -563,6 +637,31 @@ mod tests {
         let all = load_threads(root.clone()).unwrap();
         assert_eq!(all[0].status, ThreadStatus::Resolved);
         assert_eq!(all[0].entries.len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ci_failures_sync_as_threads() {
+        let dir = std::env::temp_dir().join(format!("pp-ci-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        Command::new("git").args(["init", "-q"]).current_dir(&dir).status().unwrap();
+        let root = dir.to_string_lossy().to_string();
+        let f = |msg: &str| CiFinding { check: "lint".into(), path: "a.ts".into(), line: 1, text: "let a = 1\nlet b = a\n".into(),
+                                        level: "failure".into(), title: "no-unused-vars".into(), message: msg.into() };
+
+        let s = sync_ci_threads(root.clone(), vec![f("'b' is unused")], false).unwrap();
+        assert_eq!((s.added, s.resolved), (1, 0));
+        let t = load_threads(root.clone()).unwrap();
+        assert_eq!((t[0].entries[0].author.as_str(), t[0].source.as_deref().map(|s| s.starts_with("ci:"))), ("CI · lint", Some(true)));
+        assert!(t[0].entries[0].body.contains("no-unused-vars"));
+        // Same finding again: nothing new. Checks still running: nothing resolved.
+        assert_eq!(sync_ci_threads(root.clone(), vec![f("'b' is unused")], false).unwrap(), CiSync { added: 0, reopened: 0, resolved: 0 });
+        assert_eq!(sync_ci_threads(root.clone(), vec![], false).unwrap().resolved, 0);
+        // All checks done and it's gone: resolved. It comes back: reopened.
+        assert_eq!(sync_ci_threads(root.clone(), vec![], true).unwrap().resolved, 1);
+        assert_eq!(sync_ci_threads(root.clone(), vec![f("'b' is unused")], true).unwrap().reopened, 1);
+        assert_eq!(load_threads(root.clone()).unwrap().len(), 1);
         let _ = fs::remove_dir_all(&dir);
     }
 

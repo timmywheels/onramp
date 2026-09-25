@@ -170,6 +170,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             onBaseChanged?(base)
             refreshGit()
             refreshMerge()
+            syncCI()
         } catch {
             statusLabel.stringValue = "Error: \(error)"
             return
@@ -299,6 +300,42 @@ final class ReviewView: NSView, NSPopoverDelegate {
                     self.updateStatus()
                     done(message(for: e))
                 }
+            }
+        }
+    }
+
+    // MARK: CI failures as threads
+
+    private var ciSyncedAt: [String: Date] = [:]
+
+    /// The commit whose CI we mirror: the PR's head, or your branch as pushed.
+    private func ciCommit() -> String? {
+        if base?.mode == .pullRequest { return base?.target }
+        if base?.mode == .commit { return nil }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        p.arguments = ["git", "-C", repoPath, "rev-parse", "--verify", "-q", "@{u}"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return nil }
+        p.waitUntilExit()
+        let sha = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        return p.terminationStatus == 0 && !sha.isEmpty ? sha : nil
+    }
+
+    /// Mirror failing CI annotations as review threads (at most once a minute per commit; `force` on ⌘R).
+    func syncCI(force: Bool = false) {
+        guard Style.shared.settings.ciComments, let sha = ciCommit() else { return }
+        if !force, let last = ciSyncedAt[sha], Date().timeIntervalSince(last) < 60 { return }
+        ciSyncedAt[sha] = Date()
+        let repo = repoPath
+        DispatchQueue.global(qos: .utility).async {
+            guard let (findings, complete) = try? GitHub.ciFindings(repo: repo, sha: sha),
+                  let sync = try? syncCiThreads(repoRoot: repo, findings: findings, complete: complete) else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, sync.added + sync.reopened + sync.resolved > 0 else { return }
+                self.document.reloadThreads()
             }
         }
     }
@@ -638,7 +675,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     /// Open threads where someone else (an agent) spoke last: they're waiting on you.
     var awaitingYou: [Thread] {
         allThreads.filter { t in
-            guard t.status == .open, activeClaim(thread: t) == nil, let last = t.entries.last(where: { !$0.pending }) else { return false }
+            guard t.status == .open, t.source == nil, activeClaim(thread: t) == nil, let last = t.entries.last(where: { !$0.pending }) else { return false }
             return last.author != author
         }
     }
@@ -1231,6 +1268,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         func status(_ t: Thread) -> CommentsPanel.Status {
             if t.status == .resolved { return .resolved }
             if let c = activeClaim(thread: t) { return .working(agent: c.agent) }
+            if t.source?.hasPrefix("ci:") == true { return .ci }
             if t.entries.allSatisfy(\.pending) { return .pending }
             if let last = t.entries.last(where: { !$0.pending }), last.author != author { return .needsYou }
             return .open

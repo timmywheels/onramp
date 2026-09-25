@@ -337,6 +337,7 @@ enum RecentProjects {
     }
 
     static func add(_ path: String) {
+        guard ProcessInfo.processInfo.environment["PP_SELFTEST"] == nil else { return } // tests use scratch repos
         UserDefaults.standard.set(([path] + list.filter { $0 != path }).prefix(12).map { $0 }, forKey: key)
     }
 

@@ -421,6 +421,12 @@ pub fn head_texts(repo_root: String, paths: Vec<String>) -> Result<Vec<Option<St
     texts_at(&repo_root, "HEAD", &paths)
 }
 
+/// One file at a commit (None if it isn't there).
+#[uniffi::export]
+pub fn file_at(repo_root: String, rev: String, path: String) -> Option<String> {
+    texts_at(&repo_root, &rev, &[path]).ok().and_then(|mut v| v.pop().flatten())
+}
+
 /// Content of each path at commit `rev` (None where it doesn't exist).
 pub fn texts_at(repo_root: &str, rev: &str, paths: &[String]) -> Result<Vec<Option<String>>, CoreError> {
     Ok(blobs_at(repo_root, rev, paths)?.into_iter().map(|b| b.map(|b| String::from_utf8_lossy(&b).into_owned())).collect())

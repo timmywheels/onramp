@@ -12,6 +12,7 @@ final class CommentsPanel: NSViewController {
     enum Status: Equatable {
         case open, resolved, pending
         case needsYou
+        case ci
         case working(agent: String)
     }
 
@@ -166,6 +167,7 @@ private final class CommentRow: NSView {
     private var chip: (String, NSColor)? {
         switch item.status {
         case .needsYou: ("needs you", .systemYellow)
+        case .ci: ("CI failing", DiffStyle.deletedAccent)
         case let .working(agent): ("\(agent) · working", AgentColor.of(agent))
         case .pending: ("pending", DiffStyle.accent)
         case .resolved: ("resolved", .secondaryLabelColor)
