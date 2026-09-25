@@ -162,34 +162,85 @@ enum GitHub {
         let labels: [String]
     }
 
-    static func listAll(repo: String) throws -> [PRItem] {
-        struct Check: Decodable { let status: String?; let conclusion: String?; let state: String? }
-        struct Request: Decodable { let login: String?; let name: String? }
-        struct Raw: Decodable {
-            let number: Int, title: String, author: Person, headRefName: String, baseRefName: String, updatedAt: Date, isDraft: Bool
-            let additions: Int, deletions: Int, reviewDecision: String?, reviewRequests: [Request], statusCheckRollup: [Check]?, labels: [Label]
-        }
-        let data = try gh(["pr", "list", "--state", "open", "--limit", "100", "--json",
-                           "number,title,author,headRefName,baseRefName,updatedAt,isDraft,additions,deletions,reviewDecision,reviewRequests,statusCheckRollup,labels"], repo: repo)
-        return try decoder.decode([Raw].self, from: data).map { r in
-            let checks: Checks = {
-                let all = r.statusCheckRollup ?? []
-                guard !all.isEmpty else { return .none }
-                let bad = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]
-                if all.contains(where: { bad.contains($0.conclusion ?? "") || bad.contains($0.state ?? "") }) { return .failing }
-                if all.contains(where: { ($0.status.map { $0 != "COMPLETED" } ?? false) || $0.state == "PENDING" || $0.state == "EXPECTED" }) { return .pending }
-                return .passing
-            }()
-            let review: Review = switch r.reviewDecision ?? "" {
-            case "APPROVED": .approved
-            case "CHANGES_REQUESTED": .changesRequested
-            case "REVIEW_REQUIRED": .required
-            default: .none
+    /// Open PRs, most recently updated first, a page at a time (`onPage` gets each
+    /// page as it lands, so the list fills in while the rest load). One big
+    /// request for 100 PRs with every check run timed out (504) on busy repos, so
+    /// pages are small, carry only each PR's overall check state, and shrink and
+    /// retry if GitHub still times out.
+    static func listAll(repo: String, max: Int = 100, onPage: ([PRItem]) -> Void = { _ in }) throws -> [PRItem] {
+        let parts = try slug(repo: repo).split(separator: "/").map(String.init)
+        guard parts.count == 2 else { throw Failure(description: "Couldn't tell which GitHub repo this is") }
+        let query = """
+        query($owner: String!, $name: String!, $first: Int!, $after: String) {
+          repository(owner: $owner, name: $name) {
+            pullRequests(states: OPEN, first: $first, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                number title author { login } headRefName baseRefName updatedAt isDraft additions deletions reviewDecision
+                reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
+                labels(first: 10) { nodes { name } }
+                commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+              }
             }
-            return PRItem(number: r.number, title: r.title, author: r.author.login, headRefName: r.headRefName, baseRefName: r.baseRefName,
-                          updatedAt: r.updatedAt, isDraft: r.isDraft, additions: r.additions, deletions: r.deletions, review: review,
-                          requested: r.reviewRequests.compactMap { $0.login ?? $0.name }, checks: checks, labels: r.labels.map(\.name))
+          }
         }
+        """
+        struct Reviewer: Decodable { let login: String?; let name: String? }
+        struct Request: Decodable { let requestedReviewer: Reviewer? }
+        struct Rollup: Decodable { let state: String }
+        struct Commit: Decodable { let statusCheckRollup: Rollup? }
+        struct CommitNode: Decodable { let commit: Commit }
+        struct Nodes<T: Decodable>: Decodable { let nodes: [T] }
+        struct Raw: Decodable {
+            let number: Int, title: String, author: Person?, headRefName: String, baseRefName: String, updatedAt: Date, isDraft: Bool
+            let additions: Int, deletions: Int, reviewDecision: String?
+            let reviewRequests: Nodes<Request>, labels: Nodes<Label>, commits: Nodes<CommitNode>
+        }
+        struct PageInfo: Decodable { let hasNextPage: Bool; let endCursor: String? }
+        struct Page: Decodable { let pageInfo: PageInfo; let nodes: [Raw] }
+        struct Repo: Decodable { let pullRequests: Page }
+        struct DataField: Decodable { let repository: Repo }
+        struct Response: Decodable { let data: DataField }
+
+        var all: [PRItem] = []
+        var after: String?
+        var size = 10 // a small first page paints fast (~1.7 s on a busy repo); then bigger ones
+        while all.count < max {
+            var args = ["api", "graphql", "-f", "query=\(query)", "-f", "owner=\(parts[0])", "-f", "name=\(parts[1])", "-F", "first=\(min(size, max - all.count))"]
+            if let after { args += ["-f", "after=\(after)"] }
+            let data: Data
+            do {
+                data = try gh(args, repo: repo)
+            } catch let e as Failure where size > 5 && (e.description.contains("502") || e.description.contains("504") || e.description.lowercased().contains("timeout")) {
+                size = Swift.max(5, size / 2) // GitHub gave up on this page: ask for less
+                continue
+            }
+            let page = try decoder.decode(Response.self, from: data).data.repository.pullRequests
+            let items = page.nodes.map { r -> PRItem in
+                let checks: Checks = switch r.commits.nodes.first?.commit.statusCheckRollup?.state ?? "" {
+                case "SUCCESS": .passing
+                case "FAILURE", "ERROR": .failing
+                case "PENDING", "EXPECTED": .pending
+                default: .none
+                }
+                let review: Review = switch r.reviewDecision ?? "" {
+                case "APPROVED": .approved
+                case "CHANGES_REQUESTED": .changesRequested
+                case "REVIEW_REQUIRED": .required
+                default: .none
+                }
+                return PRItem(number: r.number, title: r.title, author: r.author?.login ?? "ghost", headRefName: r.headRefName, baseRefName: r.baseRefName,
+                              updatedAt: r.updatedAt, isDraft: r.isDraft, additions: r.additions, deletions: r.deletions, review: review,
+                              requested: r.reviewRequests.nodes.compactMap { $0.requestedReviewer.flatMap { $0.login ?? $0.name } },
+                              checks: checks, labels: r.labels.nodes.map(\.name))
+            }
+            all += items
+            onPage(all)
+            size = Swift.max(size, 30)
+            guard page.pageInfo.hasNextPage, let next = page.pageInfo.endCursor else { break }
+            after = next
+        }
+        return all
     }
 
     /// Your GitHub login (for "me" filters), asked once.
@@ -320,8 +371,10 @@ enum GitHub {
     }
 
     /// Fetch a PR (read-only: a private ref, no checkout). The tab then points its review at it.
-    static func fetch(repo: String, number: Int) throws -> PR {
+    /// `step` says what's happening, for the loading state ("Fetching its commits…").
+    static func fetch(repo: String, number: Int, step: (String) -> Void = { _ in }) throws -> PR {
         let pr = try view(repo: repo, number: number)
+        step(pr.title.isEmpty ? "Fetching its commits…" : "Fetching the commits for \u{201C}\(pr.title)\u{201D}…")
         try fetchPullRequest(repoRoot: repo, remote: "origin", number: UInt32(number), baseBranch: pr.baseRefName)
         cache(pr, repo: repo)
         RecentPRs.add(number, title: pr.title, repo: repo)

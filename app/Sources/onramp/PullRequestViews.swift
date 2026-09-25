@@ -17,7 +17,11 @@ final class PullRequestList: NSViewController, NSSearchFieldDelegate {
     private let list = PRRows()
     private let status = NSTextField(wrappingLabelWithString: "")
     private let chooseGh = NSButton(title: "Choose gh…", target: nil, action: nil)
-    private var loading = false
+    private var loading = false { didSet { updateLoading() } }
+    /// Row-shaped placeholders until the first page lands.
+    private let skeleton = SkeletonView(.pullRequests)
+    /// "Loading more…" under the rows while later pages arrive.
+    private let more = LoadingMoreView()
     /// The PR shown in this tab (highlighted).
     var current: Int? { didSet { list.subviews.forEach { $0.needsDisplay = true }; list.current = current } }
     /// View a PR; `done` gets an error to show, or nil.
@@ -54,7 +58,8 @@ final class PullRequestList: NSViewController, NSSearchFieldDelegate {
         chooseGh.target = self
         chooseGh.action = #selector(chooseGhClicked)
         chooseGh.isHidden = true
-        for v in [search, chips, scroll, status, chooseGh] as [NSView] {
+        skeleton.isHidden = true
+        for v in [search, chips, scroll, skeleton, status, chooseGh] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
@@ -69,6 +74,10 @@ final class PullRequestList: NSViewController, NSSearchFieldDelegate {
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            skeleton.topAnchor.constraint(equalTo: scroll.topAnchor),
+            skeleton.leadingAnchor.constraint(equalTo: scroll.leadingAnchor),
+            skeleton.trailingAnchor.constraint(equalTo: scroll.trailingAnchor),
+            skeleton.bottomAnchor.constraint(equalTo: scroll.bottomAnchor),
             status.topAnchor.constraint(equalTo: chips.bottomAnchor, constant: 40),
             status.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
             status.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
@@ -83,11 +92,19 @@ final class PullRequestList: NSViewController, NSSearchFieldDelegate {
     func refresh() {
         guard !loading else { return }
         loading = true
-        if items.isEmpty { show("Loading pull requests…") }
         let repo = self.repo
         DispatchQueue.global(qos: .userInitiated).async {
             let me = GitHub.myLogin(repo: repo)
-            let result = Result { try GitHub.listAll(repo: repo) }
+            let result = Result {
+                try GitHub.listAll(repo: repo) { soFar in // show each page as it lands
+                    DispatchQueue.main.async { [weak self] in
+                        guard let self, self.loading else { return }
+                        self.me = me
+                        self.items = soFar
+                        self.apply()
+                    }
+                }
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.loading = false
@@ -189,7 +206,9 @@ final class PullRequestList: NSViewController, NSSearchFieldDelegate {
         list.me = me
         list.current = current
         list.set(shown) { [weak self] n in self?.view(n) }
-        show(shown.isEmpty ? (items.isEmpty ? "No open pull requests." : "No pull requests match these filters.") : nil)
+        list.addSubview(more)
+        updateLoading()
+        show(shown.isEmpty && !loading ? (items.isEmpty ? "No open pull requests." : "No pull requests match these filters.") : nil)
         layoutRows()
     }
 
@@ -198,6 +217,15 @@ final class PullRequestList: NSViewController, NSSearchFieldDelegate {
         onView?(n) { [weak self] error in
             if let error { self?.show(error, error: true) } else { self?.current = n }
         }
+    }
+
+    /// Placeholders before anything arrives; a spinner row under the list after.
+    private func updateLoading() {
+        guard isViewLoaded else { return }
+        skeleton.isHidden = !(loading && items.isEmpty)
+        more.isHidden = !(loading && !items.isEmpty)
+        more.isHidden ? more.spinner.stopAnimation(nil) : more.spinner.startAnimation(nil)
+        layoutRows()
     }
 
     private func show(_ text: String?, error: Bool = false) {
@@ -209,12 +237,39 @@ final class PullRequestList: NSViewController, NSSearchFieldDelegate {
     @objc private func layoutRows() {
         let w = scroll.contentSize.width
         var y: CGFloat = 0
-        for row in list.subviews {
+        for row in list.subviews where row is PRRow {
             row.frame = NSRect(x: 0, y: y, width: w, height: PRRow.height)
             y += PRRow.height
         }
+        if !more.isHidden {
+            more.frame = NSRect(x: 0, y: y, width: w, height: 36)
+            y += 36
+        }
         list.frame = NSRect(x: 0, y: 0, width: w, height: max(y, scroll.contentSize.height))
     }
+}
+
+/// A spinner and "Loading more…", under the rows while later pages arrive.
+private final class LoadingMoreView: NSView {
+    let spinner = NSProgressIndicator()
+    private let label = NSTextField(labelWithString: "Loading more…")
+
+    init() {
+        super.init(frame: .zero)
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.isDisplayedWhenStopped = false
+        label.font = .systemFont(ofSize: 11.5)
+        label.textColor = .secondaryLabelColor
+        let row = NSStackView(views: [spinner, label])
+        row.spacing = 6
+        row.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(row)
+        NSLayoutConstraint.activate([row.centerXAnchor.constraint(equalTo: centerXAnchor), row.centerYAnchor.constraint(equalTo: centerYAnchor)])
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
 }
 
 /// "Review: Any ⌄" — a small capsule that pops up its choices.

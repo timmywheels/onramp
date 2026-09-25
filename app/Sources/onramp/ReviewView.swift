@@ -124,6 +124,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
         let barHeight = prBar.isHidden ? 0 : prBar.height(max: (bounds.height - h) * 0.45)
         prBar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
         scrollView.frame = NSRect(x: 0, y: h, width: bounds.width, height: bounds.height - h - barHeight)
+        loadingView?.frame = scrollView.frame
         document.width = scrollView.contentSize.width
         DiffStyle.paintWidth = document.width
 
@@ -288,12 +289,35 @@ final class ReviewView: NSView, NSPopoverDelegate {
     }
 
     /// Fetch a pull request (read-only) and review it. `done` gets an error to show, or nil.
+    /// Over the diff while a PR is fetched and loaded: diff-shaped placeholders and what's happening.
+    private var loadingView: SkeletonView?
+
+    private func showLoading(_ caption: String) {
+        if loadingView == nil {
+            let v = SkeletonView(.diff)
+            v.layer?.backgroundColor = DiffStyle.background.cgColor
+            v.frame = scrollView.frame
+            addSubview(v, positioned: .above, relativeTo: scrollView)
+            loadingView = v
+        }
+        loadingView?.set(caption: caption)
+    }
+
+    private func hideLoading() {
+        loadingView?.removeFromSuperview()
+        loadingView = nil
+    }
+
     func openPullRequest(_ number: Int, done: @escaping (String?) -> Void = { _ in }) {
         guard document.dirtyCount == 0 else { return done("Save your edits first (⌘S).") }
         let repo = repoPath
-        statusLabel.stringValue = "Fetching pull request #\(number)…"
+        showLoading("Getting #\(number) from GitHub…")
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try GitHub.fetch(repo: repo, number: number) }
+            let result = Result {
+                try GitHub.fetch(repo: repo, number: number) { step in
+                    DispatchQueue.main.async { [weak self] in self?.showLoading(step) }
+                }
+            }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 switch result {
@@ -301,9 +325,14 @@ final class ReviewView: NSView, NSPopoverDelegate {
                     self.choice.mode = .pullRequest
                     self.choice.pr = UInt32(number)
                     self.choice.baseBranch = "origin/" + pr.baseRefName
-                    self.reload()
-                    done(nil)
+                    self.showLoading("Building the diff…")
+                    DispatchQueue.main.async { // let that caption draw before the (synchronous) load
+                        self.reload()
+                        self.hideLoading()
+                        done(nil)
+                    }
                 case let .failure(e):
+                    self.hideLoading()
                     self.updateStatus()
                     done(message(for: e))
                 }

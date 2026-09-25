@@ -164,6 +164,21 @@ enum SelfTest {
             }
             return
         }
+        if mode == "prlist" { // the PR sidebar's fetch, page by page, timed
+            let repo = review.document.repoRootForTests
+            DispatchQueue.global().async {
+                let t0 = CACurrentMediaTime()
+                do {
+                    let all = try GitHub.listAll(repo: repo) { soFar in
+                        log(String(format: "page: %d PRs at %.1f s", soFar.count, CACurrentMediaTime() - t0))
+                    }
+                    let failing = all.filter { $0.checks == .failing }.count, drafts = all.filter(\.isDraft).count
+                    log("total \(all.count); failing \(failing); drafts \(drafts); newest #\(all.first?.number ?? 0) \(all.first?.title.prefix(40) ?? "")")
+                } catch { log("error: \(error)") }
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+            return
+        }
         if mode == "prs" {
             Task { @MainActor in
                 guard let app = AppDelegate.current, let tab = app.front else { return log("setup") }
@@ -453,7 +468,13 @@ enum SelfTest {
                 let target = env["ONRAMP_SNAP_FILE"].flatMap { f in files.firstIndex { $0.path.hasSuffix(f) } } ?? min(2, max(0, files.count - 1))
                 review.document.scrollToFile(target)
                 if env["ONRAMP_SNAP_PANEL"] == "prs" { (NSApp.delegate as? AppDelegate)?.showPullRequests(nil) }
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                if let n = env["ONRAMP_SNAP_OPEN_PR"].flatMap(Int.init) { // catch the loading states mid-flight
+                    (NSApp.delegate as? AppDelegate)?.showPullRequests(nil)
+                    review.openPullRequest(n)
+                    try? await Task.sleep(nanoseconds: 700_000_000)
+                } else {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                }
                 guard let out = ProcessInfo.processInfo.environment["ONRAMP_SNAP_OUT"], let window = review.window else { return log("no window") }
                 // screencapture draws it exactly as on screen (vibrancy included), even behind other windows.
                 let p = Process()
