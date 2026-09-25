@@ -6,6 +6,12 @@ any agent to read and resolve those comments.
 
 ## Install
 
+Download the DMG from [Releases](https://github.com/timmywheels/onramp/releases/latest). It's signed and
+notarized, and updates itself (**Onramp → Check for Updates…**; it also checks every 6 hours).
+Then **Onramp → Install Command Line Tool…** for `onramp` in your terminal.
+
+From source:
+
     ./scripts/install.sh          # builds and links ~/.local/bin/onramp
 
 ## Try it on a playground repo
@@ -92,6 +98,32 @@ without MCP can use the same CLI:
 MCP tools: `list_comments`, `reply_to_comment`, `resolve_comment`,
 `reopen_comment`, plus the `address_comments` prompt. Replies are signed with
 the agent's name. The app updates live as the agent edits files and answers.
+
+## Performance
+
+Scrolling holds 120 fps in a 665-file review, and every keystroke is re-diffed
+in about 4 ms. Measured on an M1 Max with a release build, on a synthetic
+repo with 665 changed files (about 20,000 changed lines):
+
+| What | Time |
+|---|---|
+| Diff a 20,000-line file | < 1 ms |
+| Load a 57-file review (git + diff) | ~40 ms |
+| Load a 665-file review | ~200 ms |
+| Open a 2,000-line file in the editor | ~30 ms |
+| Keystroke → re-diff + re-highlight | ~4 ms |
+| Scroll a 665-file review | 6 ms/frame avg, p95 7–8 ms (a 120 Hz frame is 8.3 ms) |
+
+Reproduce on any repo with uncommitted changes:
+
+    (cd core && cargo test --release --lib fast_on_large_file -- --nocapture)
+    (cd core && ONRAMP_BENCH_REPO=/path/to/repo cargo test --release --lib loads_big_review_fast -- --nocapture)
+    (cd app && swift build -c release)
+    ONRAMP_SELFTEST=jump      app/.build/release/onramp /path/to/repo   # scroll frame times
+    ONRAMP_SELFTEST=1         app/.build/release/onramp /path/to/repo   # typing: insert + re-diff per key
+    ONRAMP_SELFTEST=open-time app/.build/release/onramp /path/to/repo   # opening files in the editor
+
+The self-tests type into a file: point them at a scratch copy, not a repo you care about.
 
 ## Layout
 
