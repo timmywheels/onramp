@@ -218,6 +218,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func toggleLigatures(_ sender: Any?) { Style.shared.update { $0.fontLigatures.toggle() } }
     @objc func toggleFollow(_ sender: Any?) { front?.review.toggleFollow() }
+    /// The review's primed Claude session: start (or resume), start over, or end it.
+    @objc func startAgentSession(_ sender: Any?) { front?.review.startSession(force: true) }
+    @objc func newAgentSession(_ sender: Any?) { front?.review.startSession(fresh: true, force: true) }
+    @objc func endAgentSession(_ sender: Any?) { front?.review.stopSession() }
     @objc func toggleMenuBar(_ sender: Any?) { Style.shared.update { $0.menuBar.toggle() } }
 
     @objc func zoomIn(_ sender: Any?) { Style.shared.update { $0.fontSize = min(32, $0.fontSize + 1) } }
@@ -315,6 +319,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let pr = reviewMenu.addItem(withTitle: "View Pull Request…", action: #selector(openPullRequest(_:)), keyEquivalent: "p")
         pr.keyEquivalentModifierMask = [.command, .shift]
         reviewMenu.addItem(withTitle: "Context…", action: #selector(openContext(_:)), keyEquivalent: "k")
+        reviewMenu.addItem(.separator())
+        reviewMenu.addItem(withTitle: "Start Agent Session", action: #selector(startAgentSession(_:)), keyEquivalent: "")
+        reviewMenu.addItem(withTitle: "New Agent Session", action: #selector(newAgentSession(_:)), keyEquivalent: "")
+        reviewMenu.addItem(withTitle: "End Agent Session", action: #selector(endAgentSession(_:)), keyEquivalent: "")
         reviewItem.submenu = reviewMenu
 
         let viewItem = NSMenuItem()

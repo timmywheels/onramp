@@ -36,9 +36,16 @@ enum ConnectedAgents {
 
 /// Each agent's color, the same everywhere it appears (stable across launches).
 enum AgentColor {
-    private static let palette: [NSColor] = [.systemPurple, .systemTeal, .systemPink, .systemIndigo, .systemMint, .systemOrange, .systemCyan, .systemBrown]
+    // No blues: warm and green tones that read on both appearances.
+    private static let palette: [NSColor] = [.systemPurple, .systemPink, .systemMint, .systemOrange, .systemBrown, .systemGreen]
+    /// Agents you'll know by colour: Claude's clay, Codex's green.
+    private static let known: [String: NSColor] = [
+        "claude-code": NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: 1), "claude": NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: 1),
+        "codex": NSColor(srgbRed: 0.06, green: 0.64, blue: 0.50, alpha: 1),
+    ]
 
     static func of(_ agent: String) -> NSColor {
+        if let c = known[agent.lowercased()] { return c }
         var h: UInt64 = 0xcbf2_9ce4_8422_2325
         for b in agent.lowercased().utf8 { h = (h ^ UInt64(b)) &* 0x100_0000_01b3 }
         return palette[Int(h % UInt64(palette.count))]

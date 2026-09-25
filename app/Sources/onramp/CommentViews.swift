@@ -222,6 +222,8 @@ final class CommentComposerView: NSView {
 
 /// A comment thread: entries, then Reply / Resolve / Delete (or a reply box).
 final class CommentThreadView: NSView {
+    /// What an agent session is doing on a thread right now, by thread id.
+    nonisolated(unsafe) static var activity: [String: String] = [:]
     private(set) var located: LocatedThread
     private(set) var replying: Bool
     private(set) var editing: Int?
@@ -390,7 +392,8 @@ final class CommentThreadView: NSView {
         if let claim = activeClaim(thread: t) {
             // "◉ codex · working", right-aligned on the first line, in the agent's color; the dot pulses.
             let color = AgentColor.of(claim.agent)
-            let badge = NSAttributedString(string: "\(claim.agent) · working", attributes: [.font: CommentMetrics.metaFont, .foregroundColor: color])
+            let doing = CommentThreadView.activity[t.id] ?? "working" // live, from the agent session: "editing money.ts:16"
+            let badge = NSAttributedString(string: "\(claim.agent) · \(doing)", attributes: [.font: CommentMetrics.metaFont, .foregroundColor: color])
             let size = badge.size()
             let x = bounds.width - p - 24 - size.width
             badge.draw(at: NSPoint(x: x, y: y + 1))

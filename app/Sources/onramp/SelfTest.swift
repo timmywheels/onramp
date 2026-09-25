@@ -249,6 +249,40 @@ enum SelfTest {
             }
             return
         }
+        if mode == "session" { // the review's warm session: priming, then a comment, with live activity
+            Task { @MainActor in
+                let doc = review.document, repo = doc.repoRootForTests
+                let t0 = CACurrentMediaTime()
+                while review.session?.state != .ready {
+                    if case .failed(let m)? = review.session?.state { return log("session failed: \(m)") }
+                    if CACurrentMediaTime() - t0 > 90 { return log("never became ready: \(String(describing: review.session?.state))") }
+                    try? await Task.sleep(nanoseconds: 200_000_000)
+                }
+                log(String(format: "primed in %.1f s (agent button: %@)", CACurrentMediaTime() - t0, review.agentLabelForTests))
+                guard let i = doc.files.firstIndex(where: { $0.path.hasSuffix("money.ts") }) else { return log("no file") }
+                let f = doc.files[i], text = f.newText as String
+                let line = text.components(separatedBy: "\n").firstIndex { $0.contains("export function sum") } ?? 7
+                let body = ProcessInfo.processInfo.environment["ONRAMP_SEND_BODY"] ?? "Rename `amounts` to `values` in sum()."
+                let t = try! addThread(repoRoot: repo, path: f.path, text: text, line: UInt32(line), oldSide: false, author: doc.reviewAuthor, body: body, pending: false)
+                let t1 = CACurrentMediaTime()
+                doc.following = true
+                _ = doc.sessionSend?(t, i, line)
+                var seen: [String] = [], sawCursor = false
+                while CACurrentMediaTime() - t1 < 90 {
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    if let a = CommentThreadView.activity[t.id], seen.last != a { seen.append(a); log(String(format: "  %.1f s: %@", CACurrentMediaTime() - t1, a)) }
+                    if doc.agentCursor != nil { sawCursor = true }
+                    let now = try! loadThreads(repoRoot: repo).first { $0.id == t.id }!
+                    if review.session?.state == .ready, now.claim == nil, now.entries.count > 1 || now.status == .resolved {
+                        log(String(format: "answered in %.1f s: %@; agent cursor shown: %@; last: %@", CACurrentMediaTime() - t1, "\(now.status)", sawCursor ? "yes" : "no", now.entries.last?.body ?? ""))
+                        break
+                    }
+                }
+                review.stopSession()
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if mode == "agentcheck" { // how each agent's connection is seen (and where we looked)
             DispatchQueue.global().async {
                 log("path starts: " + AgentIntegration.userPath.split(separator: ":").prefix(3).joined(separator: ":"))
@@ -568,6 +602,10 @@ enum SelfTest {
                     review.document.scrollToThread(t) // like clicking it in the side panel
                 }
                 if env["ONRAMP_SNAP_FOLLOW"] != nil { review.document.following = true }
+                if let c = env["ONRAMP_SNAP_CURSOR"], let i = review.document.files.firstIndex(where: { $0.path.hasSuffix(c) }) { // the agent's cursor, as while it edits
+                    review.document.scrollToFile(i)
+                    review.document.agentCursor = (review.document.files[i].path, 12)
+                }
                 if env["ONRAMP_SNAP_PANEL"] == "prs" { (NSApp.delegate as? AppDelegate)?.showPullRequests(nil) }
                 if let n = env["ONRAMP_SNAP_OPEN_PR"].flatMap(Int.init) { // catch the loading states mid-flight
                     (NSApp.delegate as? AppDelegate)?.showPullRequests(nil)

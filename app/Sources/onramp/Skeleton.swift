@@ -186,3 +186,37 @@ final class EmptyReviewView: NSView {
 
     @objc private func browseClicked() { onBrowse?() }
 }
+
+
+/// The agent's cursor, Zed-style: its line tinted in the agent's colour, a caret at
+/// the start of the text, and a small name tag above it.
+final class AgentCursorView: NSView {
+    static let labelHeight: CGFloat = 14
+    private let agent: String
+    private let color: NSColor
+
+    init(agent: String, color: NSColor) {
+        self.agent = agent
+        self.color = color
+        super.init(frame: .zero)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil } // never in the way of your clicks
+
+    override func draw(_ dirtyRect: NSRect) {
+        let line = NSRect(x: 0, y: Self.labelHeight, width: bounds.width, height: bounds.height - Self.labelHeight)
+        color.withAlphaComponent(0.13).setFill()
+        line.fill()
+        let x = DiffStyle.gutterWidth + 2
+        color.setFill()
+        NSRect(x: x, y: line.minY, width: 2, height: line.height).fill() // the caret
+        let tag = NSAttributedString(string: agent, attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: NSColor.white])
+        let size = tag.size()
+        let pill = NSRect(x: x, y: 0, width: size.width + 10, height: Self.labelHeight)
+        NSBezierPath(roundedRect: pill, xRadius: 3, yRadius: 3).fill()
+        tag.draw(at: NSPoint(x: pill.minX + 5, y: (Self.labelHeight - size.height) / 2))
+    }
+}

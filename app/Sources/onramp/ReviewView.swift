@@ -222,6 +222,14 @@ final class ReviewView: NSView, NSPopoverDelegate {
         loadMs = (CACurrentMediaTime() - start) * 1000
         onLoad?(document.files)
         updateAgents()
+        document.sessionRunning = { [weak self] in self?.session?.isRunning == true }
+        document.sessionSend = { [weak self] thread, i, line in
+            guard let self, let s = self.session, s.isRunning else { return false }
+            let f = self.document.files[i]
+            s.send(thread: thread.id, message: AgentSession.commentPrompt(thread: thread, path: f.path, line: line, text: f.newText as String))
+            return true
+        }
+        startSession() // primed by the time you have a question
         document.onFilesReplaced = { [weak self] files in self?.onLoad?(files); self?.updateStatus(); self?.updateEmpty() }
         updateEmpty()
         document.watchWorkingTree()
@@ -325,6 +333,56 @@ final class ReviewView: NSView, NSPopoverDelegate {
     }
 
     /// Fetch a pull request (read-only) and review it. `done` gets an error to show, or nil.
+    // MARK: The review's agent session
+
+    private(set) var session: AgentSession?
+
+    /// Start (or resume) a primed Claude session for what's on screen, if the setting says so.
+    func startSession(fresh: Bool = false, force: Bool = false) {
+        let setting = Style.shared.settings.agentSession
+        guard force || setting == "auto", setting != "off", QuickSend.target(repo: repoPath) == .claude, let base else { return }
+        if let mode = ProcessInfo.processInfo.environment["ONRAMP_SELFTEST"], mode != "session" { return } // tests don't start real agents
+        let prNumber = base.mode == .pullRequest ? choice.pr.map(Int.init) : nil
+        let key = repoPath + "|" + (prNumber.map { "pr-\($0)" } ?? (base.target ?? base.branch ?? "working-tree"))
+        if let s = session, s.key == key, s.isRunning, !fresh { return }
+        session?.stop()
+        let readOnly = document.readOnly
+        let repo = repoPath
+        let files = document.files.map(\.path)
+        let pr = prNumber.flatMap { GitHub.cached(repo: repo, number: $0) }
+        let title = pr.map { "pull request #\(prNumber!) \u{201C}\($0.title)\u{201D}" } ?? base.branch.map { "the changes against \($0)" }
+        let context = reviewContext(repoRoot: repo, configDir: onrampConfigDir.path).text
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let workDir = readOnly ? ((try? reviewCheckout(repoRoot: repo)) ?? repo) : repo // a PR: its own read-only checkout
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let s = AgentSession(repo: repo, workDir: workDir, readOnly: readOnly, key: key)
+                s.onChange = { [weak self] in self?.updateAgents() }
+                s.onActivity = { [weak self, weak s] activity in
+                    guard let self, let s else { return }
+                    CommentThreadView.activity = s.currentThread.map { [$0: activity?.label ?? "working"] } ?? [:]
+                    if let t = s.currentThread { self.document.threadView(t)?.needsDisplay = true }
+                    self.document.agentCursor = activity.flatMap { a in a.kind == .editing ? a.path.map { ($0, a.line) } : nil }
+                    self.updateAgents()
+                }
+                s.onFinished = { [weak self] _, error in
+                    CommentThreadView.activity = [:]
+                    self?.document.agentCursor = nil
+                    self?.document.reloadThreads()
+                    if let error { self?.document.onNotice?(error) }
+                }
+                self.session = s
+                s.start(prime: AgentSession.primePrompt(files: files, title: title, description: pr?.body, context: context, readOnly: readOnly), fresh: fresh)
+            }
+        }
+    }
+
+    func stopSession() {
+        session?.stop()
+        session = nil
+        updateAgents()
+    }
+
     @objc func toggleFollow() { document.following.toggle(); followSawWork = false }
     private var followSawWork = false
 
@@ -644,6 +702,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
 
     /// Stop timers and file watchers before this view goes away (switching projects).
     func close() {
+        session?.stop() // resumable next time this review opens
         agentTimer?.invalidate()
         agentTimer = nil
         document.stopWatching()
@@ -699,6 +758,22 @@ final class ReviewView: NSView, NSPopoverDelegate {
             color = failed.isEmpty ? DiffStyle.addedAccent : DiffStyle.deletedAccent
             label = failed.isEmpty ? (finished.count == 1 ? "Agent done" : "Agents done") : (failed.count == 1 ? "\(failed[0].title) failed" : "Agents failed")
             tip = finished.map { "\($0.0.title) \($0.1 ? "finished" : "failed")" }.joined(separator: "\n") + "\nClick for the log."
+        }
+        if let s = session {
+            switch s.state {
+            case .starting, .priming:
+                color = DiffStyle.accent; pulsing = true; label = "Claude priming…"
+                tip = "Claude is reading this review, so it's ready when you send a comment (⌘⇧↩)."
+            case .busy:
+                color = DiffStyle.accent; pulsing = true; label = "Claude · " + (s.activity?.label ?? "working…")
+                tip = "Claude is on a comment in this review's session."
+            case .ready where running.isEmpty && working.isEmpty && waiting == 0:
+                color = DiffStyle.addedAccent; label = "Claude ready"
+                tip = "A Claude session is primed on this review. ⌘⇧↩ on a comment sends it straight there."
+            case let .failed(m):
+                tip += "\nClaude session: \(m)"
+            default: break
+            }
         }
         let pending = document.pendingCount
         let reviewTitle = pending > 0 ? "Finish review (\(pending))" : "Review changes"
@@ -1389,6 +1464,26 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         }, completionHandler: { v.removeFromSuperview() })
     }
 
+    // MARK: The agent's cursor
+
+    /// Where the agent is editing (from its live session): a Zed-style cursor with its name,
+    /// on a tinted line. nil hides it. Following scrolls to it.
+    var agentCursor: (path: String, line: Int?)? { didSet { placeAgentCursor(scroll: true) } }
+    private var cursorView: AgentCursorView?
+
+    private func placeAgentCursor(scroll: Bool = false) {
+        guard let c = agentCursor, let line = c.line, let i = indexByPath[c.path] else {
+            cursorView?.removeFromSuperview(); cursorView = nil
+            return
+        }
+        let rows = files[i].layout.rows
+        guard let row = rows.first(where: { if case let .line(l, _) = $0.kind { return l >= line } else { return false } }) else { return }
+        let v = cursorView ?? AgentCursorView(agent: "Claude", color: AgentColor.of("claude-code"))
+        if cursorView == nil { addSubview(v, positioned: .below, relativeTo: hover); cursorView = v }
+        v.frame = NSRect(x: 0, y: tops[i] + row.y - AgentCursorView.labelHeight, width: bounds.width, height: row.height + AgentCursorView.labelHeight)
+        if scroll, following { follow(file: i, line: line) }
+    }
+
     /// First line where `b` differs from `a`.
     private static func firstChangedLine(_ a: String, _ b: String) -> Int {
         var line = 0
@@ -1463,6 +1558,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         needsLayout = true
         canvas.needsDisplay = true
         onFilesReplaced?(files)
+        placeAgentCursor() // lines moved: keep the cursor on its line
         if following, let c = changed, let i = indexByPath[c.path] {
             layoutSubtreeIfNeeded()
             follow(file: i, line: c.line)
@@ -1594,9 +1690,13 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     /// "Send to Claude" is offered while the diff is your working tree (the agent edits these files).
     private var sendAgentName: String? {
+        if sessionRunning?() == true { return "Claude" } // the review's session: works in PR views too (it answers)
         guard !readOnly else { return nil }
         return QuickSend.target(repo: repoPath) == .codex ? "Codex" : "Claude"
     }
+    /// The review's warm agent session, if it's up: takes the thread and returns true.
+    var sessionSend: ((Thread, Int, Int) -> Bool)?
+    var sessionRunning: (() -> Bool)?
 
     /// Something to tell you (a quick send that couldn't start or finish).
     var onNotice: ((String) -> Void)?
@@ -1604,6 +1704,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     /// Hand one thread to your agent now; its fix and answer show up live.
     private func send(_ thread: Thread, file i: Int, line: Int) {
         following = true // you just asked for it: watch it happen
+        if sessionSend?(thread, i, line) == true { return reloadThreads() }
         QuickSend.send(thread: thread, path: files[i].path, line: line, text: files[i].newText as String, repo: repoPath) { [weak self] error in
             self?.reloadThreads()
             if let error { self?.onNotice?(error) }
