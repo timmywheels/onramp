@@ -85,6 +85,29 @@ enum SelfTest {
             log("done")
             return
         }
+        if mode == "git" {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                log("git button: '\(review.gitButtonTitleForTests)'")
+                let stage = ProcessInfo.processInfo.environment["PP_STAGE"] ?? ""
+                if stage == "commit" { review.showCommitForTests() }
+                if stage == "merge" { review.showMergeForTests() }
+                if stage == "run" {
+                    let repo = review.document.repoRootForTests
+                    let sha = try! commitAll(repoRoot: repo, message: "WIP from the self-test")
+                    _ = try! pushBranch(repoRoot: repo)
+                    review.refreshGit()
+                    try? await Task.sleep(nanoseconds: 1_500_000_000)
+                    log("committed \(sha), pushed; git button now: '\(review.gitButtonTitleForTests)' hidden=\(review.gitButtonHiddenForTests)")
+                }
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                let ids = NSApp.windows.filter { $0 !== review.window && $0.isVisible }.map { "\($0.windowNumber)" }
+                log("window id \(review.window!.windowNumber)")
+                log("popover ids \(ids.joined(separator: ","))")
+                log("ready")
+            }
+            return
+        }
         if mode == "prtabs" {
             Task { @MainActor in
                 guard let app = AppDelegate.current, let first = app.front else { return log("setup") }

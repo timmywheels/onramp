@@ -363,7 +363,9 @@ final class PullRequestBar: NSView {
     private let bodyScroll = NSScrollView()
     private let bodyText = NSTextView()
     private let openButton = CapsuleButton()
+    let mergeButton = CapsuleButton()
     var onToggle: (() -> Void)?
+    var onMerge: (() -> Void)?
 
     override var isFlipped: Bool { true }
 
@@ -384,7 +386,23 @@ final class PullRequestBar: NSView {
         openButton.target = self
         openButton.action = #selector(openOnGitHub)
         addSubview(openButton)
+        mergeButton.setText("Merge…")
+        mergeButton.horizontalPadding = 10
+        mergeButton.target = self
+        mergeButton.action = #selector(mergeClicked)
+        mergeButton.isHidden = true
+        mergeButton.toolTip = "Merge this pull request on GitHub"
+        addSubview(mergeButton)
     }
+
+    /// Show "Merge…" (your own open PR).
+    func showMerge(_ show: Bool) {
+        mergeButton.isHidden = !show
+        needsLayout = true
+        needsDisplay = true
+    }
+
+    @objc private func mergeClicked() { onMerge?() }
 
     required init?(coder: NSCoder) { fatalError() }
 
@@ -411,6 +429,8 @@ final class PullRequestBar: NSView {
         super.layout()
         openButton.fit()
         openButton.frame.origin = NSPoint(x: bounds.width - 12 - openButton.frame.width, y: (Self.collapsedHeight - CapsuleButton.height) / 2)
+        mergeButton.fit()
+        mergeButton.frame.origin = NSPoint(x: openButton.frame.minX - 8 - mergeButton.frame.width, y: openButton.frame.minY)
         bodyScroll.isHidden = !expanded
         bodyScroll.frame = NSRect(x: 0, y: Self.collapsedHeight, width: bounds.width, height: max(0, bounds.height - Self.collapsedHeight - 6))
         bodyText.frame.size.width = bodyScroll.contentSize.width
@@ -451,7 +471,8 @@ final class PullRequestBar: NSView {
         if !pr.labels.isEmpty { line.append(NSAttributedString(string: " · " + pr.labels.joined(separator: ", "), attributes: meta)) }
         let x = chipRect.maxX + 10
         let lh = line.size().height
-        line.draw(with: NSRect(x: x, y: mid - lh / 2, width: openButton.frame.minX - 12 - x, height: lh), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        let rightEdge = mergeButton.isHidden ? openButton.frame.minX : mergeButton.frame.minX
+        line.draw(with: NSRect(x: x, y: mid - lh / 2, width: rightEdge - 12 - x, height: lh), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
     }
 
     override func mouseDown(with event: NSEvent) {

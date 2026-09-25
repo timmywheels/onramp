@@ -14,6 +14,10 @@ final class ReviewView: NSView, NSPopoverDelegate {
     private let progressLabel = NSTextField(labelWithString: "")
     private let agentButton = AgentButton()
     private let reviewButton = CapsuleButton()
+    /// Commit / push your branch (working-tree views only).
+    private let gitButton = CapsuleButton()
+    private var gitStatus: BranchStatus?
+    private var gitPopover: NSPopover?
     /// Agents with pairprogram set up (from each agent's CLI; checked in the background).
     private var configuredAgents: [String] = []
     private var agentChecks = 0
@@ -72,7 +76,11 @@ final class ReviewView: NSView, NSPopoverDelegate {
         foldAllButton.imagePosition = .imageOnly
         foldAllButton.target = self
         foldAllButton.action = #selector(toggleFoldAll)
-        for v in [foldAllButton, progress, progressLabel, statusLabel, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
+        gitButton.target = self
+        gitButton.action = #selector(gitClicked)
+        gitButton.isHidden = true
+        prBar.onMerge = { [weak self] in self?.showMerge() }
+        for v in [foldAllButton, progress, progressLabel, statusLabel, gitButton, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
         // Agents come and go (sessions start/end); poll cheaply.
         agentTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -80,11 +88,12 @@ final class ReviewView: NSView, NSPopoverDelegate {
                 self.updateAgents()
                 self.agentChecks += 1
                 if self.agentChecks % 30 == 0 { self.refreshConfiguredAgents() } // once a minute
+                if self.agentChecks % 5 == 0 { self.refreshGit() } // every 10 s (commits made elsewhere)
             }
         }
         refreshConfiguredAgents()
 
-        document.onChange = { [weak self] in self?.updateStatus(); self?.updateAgents() }
+        document.onChange = { [weak self] in self?.updateStatus(); self?.updateAgents(); self?.refreshGit() }
         document.onFileChanged = { [weak self] i in self?.onFileChanged?(i) }
         document.onCurrentFile = { [weak self] i in self?.onCurrentFile?(i) }
         NotificationCenter.default.addObserver(
@@ -117,7 +126,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             v.frame.origin = NSPoint(x: x, y: round((h - v.frame.height) / 2) + 0.5)
         }
         var right = bounds.width - 8 // 8pt all around: the capsule follows the window's corner
-        for v in [agentButton, reviewButton] {
+        for v in [agentButton, reviewButton, gitButton] where !v.isHidden {
             v.fit()
             right -= v.frame.width
             v.frame.origin = NSPoint(x: right, y: round((h - v.frame.height) / 2))
@@ -159,6 +168,8 @@ final class ReviewView: NSView, NSPopoverDelegate {
             needsLayout = true
             document.setFiles(TreeOrder.sorted(try loadReview(repoRoot: repoPath, baseRev: base.rev, target: base.target).map(ReviewFile.init)))
             onBaseChanged?(base)
+            refreshGit()
+            refreshMerge()
         } catch {
             statusLabel.stringValue = "Error: \(error)"
             return
@@ -245,6 +256,21 @@ final class ReviewView: NSView, NSPopoverDelegate {
     }
 
     func clickAgentForTests() { agentButtonClicked() }
+    var gitButtonTitleForTests: String { gitButton.attributedTitle.string }
+    var gitButtonHiddenForTests: Bool { gitButton.isHidden }
+    func showCommitForTests() { showCommit() }
+    func showMergeForTests() {
+        mergeInfo = GitHub.MergeInfo(author: "timmywheels", isMine: true, state: "OPEN", isDraft: false, mergeable: "MERGEABLE", mergeState: "CLEAN",
+                                     review: .approved, checks: .passing, methods: [.squash, .merge, .rebase], deleteBranchDefault: true)
+        choice.pr = 7
+        prBar.set(GitHub.PR(number: 7, title: "Partial payments", body: "", author: "timmywheels", headRefName: "feat/partial-payments", baseRefName: "main",
+                            url: "https://github.com", state: "OPEN", isDraft: false, additions: 126, deletions: 26, changedFiles: 13, labels: []))
+        prBar.isHidden = false
+        prBar.showMerge(true)
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+        showMerge()
+    }
     func expandPullRequestBarForTests() { if !prBar.expanded { prBar.mouseDown(with: NSEvent.mouseEvent(with: .leftMouseDown, location: prBar.convert(NSPoint(x: 20, y: 10), to: nil), modifierFlags: [], timestamp: 0, windowNumber: window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!) } }
     var agentLabelForTests: String { agentButton.attributedTitle.string.trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "\u{2007}"))) + " [" + (agentButton.toolTip ?? "") + "]" }
 
@@ -275,6 +301,153 @@ final class ReviewView: NSView, NSPopoverDelegate {
                 }
             }
         }
+    }
+
+    // MARK: Git (your branch) and merging (your PR)
+
+    /// What the Git button shows: the next thing to do with your branch.
+    func refreshGit() {
+        guard !document.readOnly else { gitButton.isHidden = true; needsLayout = true; return }
+        let repo = repoPath
+        DispatchQueue.global(qos: .utility).async {
+            let status = try? branchStatus(repoRoot: repo)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, !self.document.readOnly else { return }
+                self.gitStatus = status
+                guard let s = status, s.branch != nil else { self.gitButton.isHidden = true; self.needsLayout = true; return }
+                let title = s.changed > 0 ? "Commit…" : s.upstream == nil ? "Publish Branch" : s.ahead > 0 ? "↑\(s.ahead) Push" : nil
+                self.gitButton.isHidden = title == nil
+                if let title, self.gitButton.title != title { self.gitButton.setText(title) }
+                self.gitButton.toolTip = [s.branch.map { "On \($0)" }, s.upstream.map { "tracking \($0)" },
+                                          s.ahead > 0 ? "\(s.ahead) to push" : nil, s.behind > 0 ? "\(s.behind) behind" : nil,
+                                          s.changed > 0 ? "\(s.changed) changed files" : nil].compactMap { $0 }.joined(separator: " · ")
+                self.needsLayout = true
+            }
+        }
+    }
+
+    @objc private func gitClicked() {
+        guard let s = gitStatus else { return }
+        let menu = NSMenu()
+        func item(_ title: String, _ enabled: Bool, _ action: Selector) {
+            let i = menu.addItem(withTitle: title, action: enabled ? action : nil, keyEquivalent: "")
+            i.target = self
+            i.isEnabled = enabled
+        }
+        item(s.changed > 0 ? "Commit \(s.changed) Changed File\(s.changed == 1 ? "" : "s")…" : "Nothing to Commit", s.changed > 0, #selector(showCommit))
+        if s.upstream == nil {
+            item("Publish \(s.branch ?? "Branch") to origin…", s.branch != nil, #selector(confirmPush))
+        } else {
+            item(s.ahead > 0 ? "Push \(s.ahead) Commit\(s.ahead == 1 ? "" : "s") to \(s.upstream!)…" : "Up to Date with \(s.upstream!)", s.ahead > 0, #selector(confirmPush))
+        }
+        if s.behind > 0 { item("\(s.behind) Commit\(s.behind == 1 ? "" : "s") Behind (pull in a terminal)", false, #selector(confirmPush)) }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: gitButton.bounds.height + 4), in: gitButton)
+    }
+
+    @objc private func showCommit() {
+        guard let s = gitStatus else { return }
+        let vc = CommitViewController(status: s)
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = vc
+        vc.onCommit = { [weak self, weak popover] message, push in
+            guard let self else { return nil }
+            do {
+                let sha = try commitAll(repoRoot: self.repoPath, message: message)
+                if push { _ = try pushBranch(repoRoot: self.repoPath) }
+                popover?.close()
+                self.statusLabel.stringValue = push ? "Committed \(sha) and pushed" : "Committed \(sha)"
+                self.reload()
+                return nil
+            } catch {
+                return pairprogram.message(for: error)
+            }
+        }
+        gitPopover = popover
+        popover.show(relativeTo: gitButton.bounds, of: gitButton, preferredEdge: .maxY)
+    }
+
+    /// Ask, then push (or publish) the branch. Never forces.
+    @objc private func confirmPush() {
+        guard let s = gitStatus, let branch = s.branch, let window else { return }
+        let alert = NSAlert()
+        if let up = s.upstream {
+            alert.messageText = "Push \(s.ahead) commit\(s.ahead == 1 ? "" : "s") to \(up)?"
+            alert.informativeText = "From your branch \(branch)."
+        } else {
+            alert.messageText = "Publish \(branch) to origin?"
+            alert.informativeText = "Creates the branch on origin and pushes \(branch) to it."
+        }
+        alert.addButton(withTitle: s.upstream == nil ? "Publish" : "Push")
+        alert.addButton(withTitle: "Cancel")
+        alert.beginSheetModal(for: window) { [weak self] response in
+            guard response == .alertFirstButtonReturn, let self else { return }
+            MainActor.assumeIsolated { self.push() }
+        }
+    }
+
+    private func push() {
+        let repo = repoPath
+        statusLabel.stringValue = "Pushing…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try pushBranch(repoRoot: repo) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                switch result {
+                case let .success(branch): self.statusLabel.stringValue = "Pushed \(branch)"
+                case let .failure(e):
+                    let alert = NSAlert()
+                    alert.alertStyle = .warning
+                    alert.messageText = "Push failed"
+                    alert.informativeText = pairprogram.message(for: e)
+                    if let w = self.window { alert.beginSheetModal(for: w) } else { alert.runModal() }
+                    self.updateStatus()
+                }
+                self.refreshGit()
+            }
+        }
+    }
+
+    /// "Merge…" in the PR bar: only for your own open PR.
+    private var mergeInfo: GitHub.MergeInfo?
+
+    private func refreshMerge() {
+        guard base?.mode == .pullRequest, let n = choice.pr.map(Int.init) else { prBar.showMerge(false); return }
+        let repo = repoPath
+        DispatchQueue.global(qos: .utility).async {
+            let info = try? GitHub.mergeInfo(repo: repo, number: n)
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.choice.pr.map(Int.init) == n else { return }
+                self.mergeInfo = info
+                self.prBar.showMerge(info.map { $0.isMine && $0.state == "OPEN" } ?? false)
+            }
+        }
+    }
+
+    private func showMerge() {
+        guard let n = choice.pr.map(Int.init), let info = mergeInfo else { return }
+        let vc = MergeViewController(number: n, info: info)
+        let popover = NSPopover()
+        popover.behavior = .semitransient
+        popover.contentViewController = vc
+        vc.onMerge = { [weak self, weak popover] method, delete, done in
+            guard let self else { return }
+            let repo = self.repoPath
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Result { try GitHub.merge(repo: repo, number: n, method: method, deleteBranch: delete) }
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success:
+                        popover?.close()
+                        self.openPullRequest(n) // re-fetch: it's merged now
+                        done(nil)
+                    case let .failure(e): done(pairprogram.message(for: e))
+                    }
+                }
+            }
+        }
+        gitPopover = popover
+        popover.show(relativeTo: prBar.mergeButton.bounds, of: prBar.mergeButton, preferredEdge: .minY)
     }
 
     /// Show something else (from the toolbar's Changes menu).

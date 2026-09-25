@@ -201,6 +201,62 @@ enum GitHub {
         return login
     }
 
+    // MARK: Merging your own PRs
+
+    enum MergeMethod: String, CaseIterable { case squash, merge, rebase
+        var title: String { switch self { case .squash: "Squash and merge"; case .merge: "Merge commit"; case .rebase: "Rebase and merge" } }
+    }
+
+    /// What the merge panel needs: can it merge, and how.
+    struct MergeInfo {
+        let author: String
+        let isMine: Bool
+        let state: String            // OPEN / MERGED / CLOSED
+        let isDraft: Bool
+        let mergeable: String        // MERGEABLE / CONFLICTING / UNKNOWN
+        let mergeState: String       // CLEAN / BLOCKED / BEHIND / UNSTABLE / DIRTY / …
+        let review: Review
+        let checks: Checks
+        let methods: [MergeMethod]   // allowed by the repo
+        let deleteBranchDefault: Bool
+    }
+
+    static func mergeInfo(repo: String, number: Int) throws -> MergeInfo {
+        struct Check: Decodable { let status: String?; let conclusion: String?; let state: String? }
+        struct PRRaw: Decodable {
+            let author: Person, state: String, isDraft: Bool, mergeable: String, mergeStateStatus: String
+            let reviewDecision: String?, statusCheckRollup: [Check]?
+        }
+        struct RepoRaw: Decodable { let squashMergeAllowed: Bool, mergeCommitAllowed: Bool, rebaseMergeAllowed: Bool, deleteBranchOnMerge: Bool }
+        let pr = try decoder.decode(PRRaw.self, from: gh(["pr", "view", String(number), "--json",
+                                                         "author,state,isDraft,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup"], repo: repo))
+        let r = try decoder.decode(RepoRaw.self, from: gh(["repo", "view", "--json", "squashMergeAllowed,mergeCommitAllowed,rebaseMergeAllowed,deleteBranchOnMerge"], repo: repo))
+        let all = pr.statusCheckRollup ?? []
+        let bad = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]
+        let checks: Checks = all.isEmpty ? .none
+            : all.contains(where: { bad.contains($0.conclusion ?? "") || bad.contains($0.state ?? "") }) ? .failing
+            : all.contains(where: { ($0.status.map { $0 != "COMPLETED" } ?? false) || $0.state == "PENDING" }) ? .pending : .passing
+        let review: Review = switch pr.reviewDecision ?? "" {
+        case "APPROVED": .approved
+        case "CHANGES_REQUESTED": .changesRequested
+        case "REVIEW_REQUIRED": .required
+        default: .none
+        }
+        var methods: [MergeMethod] = []
+        if r.squashMergeAllowed { methods.append(.squash) }
+        if r.mergeCommitAllowed { methods.append(.merge) }
+        if r.rebaseMergeAllowed { methods.append(.rebase) }
+        return MergeInfo(author: pr.author.login, isMine: pr.author.login == myLogin(repo: repo), state: pr.state, isDraft: pr.isDraft,
+                         mergeable: pr.mergeable, mergeState: pr.mergeStateStatus, review: review, checks: checks,
+                         methods: methods, deleteBranchDefault: r.deleteBranchOnMerge)
+    }
+
+    /// Merge on GitHub. With `deleteBranch`, gh also deletes the branch
+    /// (and, if you're on it locally, switches you to the base branch).
+    static func merge(repo: String, number: Int, method: MergeMethod, deleteBranch: Bool) throws {
+        _ = try gh(["pr", "merge", String(number), "--\(method.rawValue)"] + (deleteBranch ? ["--delete-branch"] : []), repo: repo)
+    }
+
     /// "123", "#123" or a PR URL → 123.
     static func number(from text: String) -> Int? {
         let t = text.trimmingCharacters(in: .whitespaces)
