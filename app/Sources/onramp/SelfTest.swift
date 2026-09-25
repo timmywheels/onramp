@@ -164,6 +164,14 @@ enum SelfTest {
             }
             return
         }
+        if mode == "agentcheck" { // how each agent's connection is seen (and where we looked)
+            DispatchQueue.global().async {
+                log("path starts: " + AgentIntegration.userPath.split(separator: ":").prefix(3).joined(separator: ":"))
+                for a in AgentIntegration.all { log("\(a.name): \(a.check())") }
+                DispatchQueue.main.async { NSApp.terminate(nil) }
+            }
+            return
+        }
         if mode == "prlist" { // the PR sidebar's fetch, page by page, timed
             let repo = review.document.repoRootForTests
             DispatchQueue.global().async {
@@ -543,7 +551,16 @@ enum SelfTest {
             }
             return
         }
-        if mode == "connect" { return review.showConnect() }
+        if mode == "connect" {
+            review.showConnect()
+            if ProcessInfo.processInfo.environment["ONRAMP_SNAP_OUT"] != nil { // picture of the popover once its checks finish
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    snap(window: NSApp.windows.first { String(describing: type(of: $0)).contains("Popover") })
+                }
+            }
+            return
+        }
         if mode == "gutter-comment" {
             // Open the editor, then click line 44's number inside it (the host's gutter).
             Task { @MainActor in

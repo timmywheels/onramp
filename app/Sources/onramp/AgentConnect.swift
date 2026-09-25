@@ -48,7 +48,11 @@ enum AgentColor {
 /// One agent onramp can register its MCP server with. Nothing is
 /// registered until the user clicks Connect (opt-in, reversible).
 struct AgentIntegration {
-    enum State: Equatable { case checking, notInstalled, connected, notConnected }
+    /// `connected` says how ("plugin", "MCP server"), since there's more than one way.
+    enum State: Equatable {
+        case checking, notInstalled, connected(String), notConnected
+        var isConnected: Bool { if case .connected = self { true } else { false } }
+    }
 
     let name: String
     let check: () -> State
@@ -74,7 +78,10 @@ struct AgentIntegration {
             name: "Claude Code",
             check: {
                 guard shell("command -v claude").status == 0 else { return .notInstalled }
-                return shell("claude plugin list").output.contains("onramp@onramp") ? .connected : .notConnected
+                // Either way counts: the plugin (what Connect installs), or a plain `claude mcp add onramp`.
+                if shell("claude plugin list").output.contains("onramp@onramp") { return .connected("plugin") }
+                if shell("claude mcp get onramp").status == 0 { return .connected("MCP server") }
+                return .notConnected
             },
             connect: {
                 if !shell("claude plugin marketplace list").output.contains("onramp") {
@@ -82,7 +89,13 @@ struct AgentIntegration {
                 }
                 try shell("claude plugin install onramp@onramp").orThrow()
             },
-            disconnect: { try shell("claude plugin uninstall onramp@onramp").orThrow() }
+            disconnect: {
+                // Undo whichever way it was connected (both, if both).
+                let plugin = shell("claude plugin list").output.contains("onramp@onramp") ? shell("claude plugin uninstall onramp@onramp") : nil
+                let server = shell("claude mcp get onramp").status == 0 ? shell("claude mcp remove onramp") : nil
+                try plugin?.orThrow()
+                try server?.orThrow()
+            }
         ),
         cli(name: "Codex", tool: "codex",
             add: "codex mcp add onramp -- '\(command)' mcp",
@@ -97,7 +110,7 @@ struct AgentIntegration {
             name: name,
             check: {
                 guard shell("command -v \(tool)").status == 0 else { return .notInstalled }
-                return shell("\(tool) mcp get onramp").status == 0 ? .connected : .notConnected
+                return shell("\(tool) mcp get onramp").status == 0 ? .connected("MCP server") : .notConnected
             },
             connect: { try shell(add).orThrow() },
             disconnect: { try shell(remove).orThrow() }
@@ -112,7 +125,7 @@ struct AgentIntegration {
             let dir = cursorConfig.deletingLastPathComponent().path
             guard FileManager.default.fileExists(atPath: dir) else { return .notInstalled }
             let servers = (readJSON(cursorConfig)["mcpServers"] as? [String: Any]) ?? [:]
-            return servers["onramp"] != nil ? .connected : .notConnected
+            return servers["onramp"] != nil ? .connected("~/.cursor/mcp.json") : .notConnected
         },
         connect: {
             var json = readJSON(cursorConfig)
@@ -149,10 +162,43 @@ struct AgentIntegration {
         }
     }
 
+    /// Your terminal's PATH (read once from an interactive login shell, so ~/.zshrc
+    /// counts), plus where agent CLIs usually install. Apps started from Finder or
+    /// the Dock only get /usr/bin:/bin, and a login-only shell skips ~/.zshrc:
+    /// that's how `claude` went missing while `codex` (Homebrew) was found.
+    static let userPath: String = {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let marker = "__ONRAMP_PATH__"
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        p.arguments = ["-ilc", "print -r -- \"\(marker)${PATH}\(marker)\""]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
+        var shellPath = ""
+        if (try? p.run()) != nil {
+            let deadline = DispatchTime.now() + 5 // a slow or stuck ~/.zshrc can't hang us
+            DispatchQueue.global().asyncAfter(deadline: deadline) { if p.isRunning { p.terminate() } }
+            let text = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            p.waitUntilExit()
+            // Between the markers: prompts and terminal escape codes around it are ignored.
+            let parts = text.components(separatedBy: marker)
+            if parts.count >= 3 { shellPath = parts[parts.count - 2] }
+        }
+        let usual = ["\(home)/.claude/local", "\(home)/.local/bin", "/opt/homebrew/bin", "/usr/local/bin", "\(home)/.npm-global/bin",
+                     "\(home)/.bun/bin", "\(home)/.volta/bin", "\(home)/.cargo/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"]
+        var seen = Set<String>()
+        return (shellPath.split(separator: ":").map(String.init) + usual).filter { !$0.isEmpty && seen.insert($0).inserted }.joined(separator: ":")
+    }()
+
     static func shell(_ command: String) -> ShellResult {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-lc", command]
+        p.arguments = ["-c", command]
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = userPath
+        p.environment = env
         let out = Pipe()
         p.standardOutput = out
         p.standardError = out
@@ -181,7 +227,9 @@ final class AgentConnectViewController: NSViewController {
         for (i, agent) in AgentIntegration.all.enumerated() {
             let name = NSTextField(labelWithString: agent.name)
             name.font = .systemFont(ofSize: 13, weight: .medium)
-            let status = NSTextField(labelWithString: "Checking…")
+            let status = NSTextField(wrappingLabelWithString: "Checking…")
+            status.maximumNumberOfLines = 3
+            status.preferredMaxLayoutWidth = 250
             status.font = .systemFont(ofSize: 11.5)
             status.textColor = .secondaryLabelColor
             let text = NSStackView(views: [name, status])
@@ -199,9 +247,19 @@ final class AgentConnectViewController: NSViewController {
             states.append(.checking)
         }
         stack.setCustomSpacing(16, after: stack.arrangedSubviews.last!)
-        PopoverUI.add(PopoverUI.note("Then ask your agent to “address my Onramp comments”. In Claude Code: /onramp:address-comments", size: 11.5), to: stack)
+        PopoverUI.add(PopoverUI.note("Then ask your agent to “address my Onramp comments”. In Claude Code: /onramp:address-comments", size: 11.5), to: stack, spacingAfter: 12)
+        let again = NSButton(title: "Check Again", target: self, action: #selector(checkAgain))
+        again.bezelStyle = .push
+        again.controlSize = .small
+        again.toolTip = "Look for each agent and its Onramp connection again (after installing an agent, or setting it up in a terminal)"
+        PopoverUI.add(PopoverUI.row([], [again]), to: stack)
         view = PopoverUI.container(stack)
         preferredContentSize = view.frame.size
+        refresh()
+    }
+
+    @objc private func checkAgain() {
+        for i in rows.indices { show(.checking, at: i) }
         refresh()
     }
 
@@ -221,8 +279,13 @@ final class AgentConnectViewController: NSViewController {
         let row = rows[i]
         switch state {
         case .checking: row.status.stringValue = "Checking…"; row.button.isEnabled = false
-        case .notInstalled: row.status.stringValue = "Not installed"; row.button.isEnabled = false; row.button.title = "Connect"
-        case .connected: row.status.stringValue = "✓ Connected"; row.status.textColor = .systemGreen; row.button.isEnabled = true; row.button.title = "Disconnect"
+        case .notInstalled:
+            let tool = row.agent.name == "Cursor" ? "Cursor" : "the \(row.agent.name == "Claude Code" ? "claude" : row.agent.name.lowercased()) command"
+            row.status.stringValue = "Couldn't find \(tool)"
+            row.status.toolTip = "Looked in your shell's PATH and the usual install folders:\n" + AgentIntegration.userPath.replacingOccurrences(of: ":", with: "\n")
+            row.status.textColor = .secondaryLabelColor; row.button.isEnabled = false; row.button.title = "Connect"
+        case let .connected(how):
+            row.status.stringValue = "✓ Connected (\(how))"; row.status.textColor = .systemGreen; row.button.isEnabled = true; row.button.title = "Disconnect"
         case .notConnected: row.status.stringValue = "Not connected"; row.status.textColor = .secondaryLabelColor; row.button.isEnabled = true; row.button.title = "Connect"
         }
     }
@@ -230,7 +293,7 @@ final class AgentConnectViewController: NSViewController {
     @objc private func toggle(_ sender: NSButton) {
         let i = sender.tag
         let agent = rows[i].agent
-        let connecting = states[i] != .connected
+        let connecting = !states[i].isConnected
         show(.checking, at: i)
         rows[i].status.stringValue = connecting ? "Connecting…" : "Disconnecting…"
         DispatchQueue.global(qos: .userInitiated).async {
@@ -239,7 +302,11 @@ final class AgentConnectViewController: NSViewController {
             let state = agent.check()
             DispatchQueue.main.async { [weak self] in
                 self?.show(state, at: i)
-                if let failure { self?.rows[i].status.stringValue = "Failed"; self?.rows[i].status.toolTip = failure }
+                if let failure { // say what went wrong, right there
+                    self?.rows[i].status.stringValue = "Didn't work: " + (failure.components(separatedBy: "\n").first { !$0.isEmpty } ?? failure)
+                    self?.rows[i].status.textColor = .systemRed
+                    self?.rows[i].status.toolTip = failure
+                }
             }
         }
     }

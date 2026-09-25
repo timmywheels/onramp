@@ -736,7 +736,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
 
     private func refreshConfiguredAgents() {
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            let names = AgentIntegration.all.filter { $0.check() == .connected }.map(\.name)
+            let names = AgentIntegration.all.filter { $0.check().isConnected }.map(\.name)
             DispatchQueue.main.async {
                 guard let self, self.configuredAgents != names else { return }
                 self.configuredAgents = names
