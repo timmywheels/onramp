@@ -446,6 +446,24 @@ enum SelfTest {
             log("problems: \(Extensions.problems.map(\.message))")
             return
         }
+        if mode == "snap" { // a picture of the window (ONRAMP_SNAP_OUT), for checking looks
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                review.document.scrollToFile(min(2, max(0, review.document.files.count - 1)))
+                (NSApp.delegate as? AppDelegate)?.showPullRequests(nil)
+                try? await Task.sleep(nanoseconds: 2_500_000_000)
+                guard let out = ProcessInfo.processInfo.environment["ONRAMP_SNAP_OUT"], let window = review.window else { return log("no window") }
+                // screencapture draws it exactly as on screen (vibrancy included), even behind other windows.
+                let p = Process()
+                p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+                p.arguments = ["-x", "-o", "-l", String(window.windowNumber), out]
+                try? p.run()
+                p.waitUntilExit()
+                log("snap \(out) (\(p.terminationStatus))")
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if mode == "sidebar" {
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 300_000_000)

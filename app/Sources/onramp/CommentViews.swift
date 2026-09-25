@@ -116,7 +116,7 @@ final class CommentInput: NSView {
         submit.action = #selector(submitClicked)
         secondary.action = #selector(secondaryClicked)
         secondary.isHidden = true
-        submit.bezelColor = DiffStyle.accent
+        submit.bezelColor = DiffStyle.primaryButton
         submit.keyEquivalent = "" // ⌘↩ is handled by the text view
         hint.font = .systemFont(ofSize: 10.5)
         hint.textColor = DiffStyle.foldText

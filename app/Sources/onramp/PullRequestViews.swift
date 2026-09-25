@@ -236,9 +236,9 @@ private final class ChipButton: CapsuleButton {
     func set(text: String, active: Bool) {
         let s = NSMutableAttributedString(string: text, attributes: [
             .font: NSFont.systemFont(ofSize: 11, weight: active ? .semibold : .regular),
-            .foregroundColor: active ? DiffStyle.accent : NSColor.secondaryLabelColor,
+            .foregroundColor: active ? NSColor.labelColor : NSColor.secondaryLabelColor,
         ])
-        if let chevron = PickerButton.padded("chevron.down", left: 4, right: 0, pointSize: 7.5, color: active ? DiffStyle.accent : .tertiaryLabelColor) {
+        if let chevron = PickerButton.padded("chevron.down", left: 4, right: 0, pointSize: 7.5, color: active ? .secondaryLabelColor : .tertiaryLabelColor) {
             let a = NSTextAttachment()
             a.image = chevron
             a.bounds = NSRect(x: 0, y: 1, width: chevron.size.width, height: chevron.size.height)
@@ -297,7 +297,7 @@ private final class PRRow: NSView {
     override func draw(_ dirtyRect: NSRect) {
         let isCurrent = list?.current == pr.number
         if isCurrent || hovering {
-            (isCurrent ? DiffStyle.accent.withAlphaComponent(0.18) : NSColor.labelColor.withAlphaComponent(0.06)).setFill()
+            (isCurrent ? DiffStyle.selection : NSColor.labelColor.withAlphaComponent(0.06)).setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 2), xRadius: 6, yRadius: 6).fill()
         }
         let pad: CGFloat = 14

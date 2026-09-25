@@ -225,6 +225,7 @@ final class ReviewSubmitViewController: NSViewController {
         let submit = NSButton(title: "Submit review", target: self, action: #selector(submitClicked))
         submit.bezelStyle = .push
         submit.keyEquivalent = "\r"
+        submit.bezelColor = DiffStyle.primaryButton
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelClicked))
         cancel.bezelStyle = .push
         cancel.keyEquivalent = "\u{1b}"

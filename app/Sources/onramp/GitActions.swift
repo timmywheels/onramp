@@ -55,6 +55,7 @@ final class CommitViewController: NSViewController {
         let commit = NSButton(title: "Commit", target: self, action: #selector(commitClicked))
         commit.bezelStyle = .push
         commit.keyEquivalent = "\r"
+        commit.bezelColor = DiffStyle.primaryButton
         commit.keyEquivalentModifierMask = [.command]
         let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelClicked))
         cancel.bezelStyle = .push
@@ -130,6 +131,7 @@ final class MergeViewController: NSViewController {
         PopoverUI.add(errorLabel, to: stack, spacingAfter: 10)
         mergeButton.bezelStyle = .push
         mergeButton.keyEquivalent = "\r"
+        mergeButton.bezelColor = DiffStyle.primaryButton
         mergeButton.target = self
         mergeButton.action = #selector(mergeClicked)
         mergeButton.isEnabled = canMerge && !info.methods.isEmpty

@@ -295,20 +295,19 @@ private final class TreeCanvas: NSView {
             let rowRect = NSRect(x: 8, y: y + 1, width: bounds.width - 16, height: h - 2)
             let isSelected = node === sb.selected
             if isSelected {
-                (keyWindow ? NSColor.controlAccentColor : NSColor.unemphasizedSelectedContentBackgroundColor).setFill()
+                (keyWindow ? DiffStyle.selection : DiffStyle.selectionInactive).setFill()
                 NSBezierPath(roundedRect: rowRect, xRadius: 5, yRadius: 5).fill()
             } else if r == hoverRow {
                 NSColor.labelColor.withAlphaComponent(0.06).setFill()
                 NSBezierPath(roundedRect: rowRect, xRadius: 5, yRadius: 5).fill()
             }
-            let onAccent = isSelected && keyWindow
             var x = 14 + CGFloat(depth) * 14
 
             // Disclosure + icon
             let file = node.fileIndex.map { sb.files[$0] }
             if file == nil {
                 let chevron = sb.isCollapsed(node) ? "chevron.right" : "chevron.down"
-                icon(chevron, onAccent ? .white : .tertiaryLabelColor)?.draw(in: NSRect(x: x, y: y + 7, width: 9, height: 10))
+                icon(chevron, .tertiaryLabelColor)?.draw(in: NSRect(x: x, y: y + 7, width: 9, height: 10))
             }
             x += 12
             let viewed = file?.viewed == true
@@ -319,21 +318,21 @@ private final class TreeCanvas: NSView {
             case .modified?: ("doc", DiffStyle.modifiedAccent)
             }
             if viewed { (symbol, tint) = ("checkmark.circle.fill", .tertiaryLabelColor) }
-            icon(symbol, onAccent ? .white : tint)?.draw(in: NSRect(x: x, y: y + 5, width: 14, height: 14))
+            icon(symbol, tint)?.draw(in: NSRect(x: x, y: y + 5, width: 14, height: 14))
             x += 20
 
             // Counts (right), then the name truncated to fit.
             let counts = NSMutableAttributedString()
-            if node.added > 0 { counts.append(NSAttributedString(string: "+\(node.added)", attributes: [.font: countFont, .foregroundColor: onAccent ? NSColor.white : DiffStyle.addedAccent])) }
+            if node.added > 0 { counts.append(NSAttributedString(string: "+\(node.added)", attributes: [.font: countFont, .foregroundColor: DiffStyle.addedAccent])) }
             if node.removed > 0 {
                 if node.added > 0 { counts.append(NSAttributedString(string: " ", attributes: [.font: countFont])) }
-                counts.append(NSAttributedString(string: "−\(node.removed)", attributes: [.font: countFont, .foregroundColor: onAccent ? NSColor.white : DiffStyle.deletedAccent]))
+                counts.append(NSAttributedString(string: "−\(node.removed)", attributes: [.font: countFont, .foregroundColor: DiffStyle.deletedAccent]))
             }
             let cw = ceil(counts.size().width)
             counts.draw(at: NSPoint(x: rowRect.maxX - 6 - cw, y: y + 6))
 
             let dirty = file != nil && (sb.isDirty?(node.fileIndex!) ?? false)
-            let nameColor: NSColor = onAccent ? .white : (viewed ? .secondaryLabelColor : file?.status == .deleted ? .secondaryLabelColor : .labelColor)
+            let nameColor: NSColor = (viewed ? .secondaryLabelColor : file?.status == .deleted ? .secondaryLabelColor : .labelColor)
             let name = NSAttributedString(string: (dirty ? "● " : "") + node.name,
                                           attributes: [.font: nameFont, .foregroundColor: nameColor, .paragraphStyle: truncating])
             name.draw(with: NSRect(x: x, y: y + 4, width: max(0, rowRect.maxX - 12 - cw - x), height: 16), options: [.usesLineFragmentOrigin])

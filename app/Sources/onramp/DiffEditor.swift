@@ -41,6 +41,18 @@ enum DiffStyle {
     nonisolated(unsafe) static var commentBackground = NSColor.controlBackgroundColor
     nonisolated(unsafe) static var commentBorder = NSColor.separatorColor
     nonisolated(unsafe) static var accent = NSColor.controlAccentColor
+    /// Selected rows and segments: a neutral graphite wash, not the system blue.
+    nonisolated(unsafe) static var selection = NSColor(name: "onramp.selection") {
+        $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 1, alpha: 0.13) : NSColor(white: 0, alpha: 0.085)
+    }
+    /// The same, in a window that isn't focused.
+    nonisolated(unsafe) static var selectionInactive = NSColor(name: "onramp.selectionInactive") {
+        $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 1, alpha: 0.08) : NSColor(white: 0, alpha: 0.05)
+    }
+    /// Primary buttons (Submit, Commit, Merge): solid graphite with white text.
+    nonisolated(unsafe) static var primaryButton = NSColor(name: "onramp.primaryButton") {
+        $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 0.40, alpha: 1) : NSColor(white: 0.22, alpha: 1)
+    }
     nonisolated(unsafe) static var isDark = true
     /// Added / deleted / modified in counts, badges and icons (themes swap these for color-blind palettes).
     nonisolated(unsafe) static var addedAccent = NSColor.systemGreen
