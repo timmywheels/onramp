@@ -10,6 +10,11 @@ final class ReviewCanvasView: NSView {
     override var isFlipped: Bool { true }
     override var isOpaque: Bool { true }
 
+    /// Whatever redraws headers here must redraw the pinned one too.
+    override var needsDisplay: Bool {
+        didSet { if needsDisplay { document?.stickyHeader.needsDisplay = true } }
+    }
+
     private var textX: CGFloat { DiffStyle.gutterWidth + 5 } // matches the editor: indent + line fragment padding
     private var baseline: CGFloat { DiffStyle.font.ascender }
 
@@ -65,7 +70,6 @@ final class ReviewCanvasView: NSView {
             }
             i += 1
         }
-        drawStickyHeader(doc, top: top, width: width, in: ctx)
     }
 
     // MARK: Rows
@@ -101,34 +105,8 @@ final class ReviewCanvasView: NSView {
     }
 
     private func drawHeader(_ file: ReviewFile, y: CGFloat, width: CGFloat, in ctx: CGContext) {
-        let h = FileLayout.headerHeight
-        fill(DiffStyle.headerBackground, CGRect(x: 0, y: y, width: width, height: h), ctx)
-        fill(DiffStyle.separator, CGRect(x: 0, y: y, width: width, height: 1), ctx)
-        fill(DiffStyle.separator, CGRect(x: 0, y: y + h - 1, width: width, height: 1), ctx)
-        let badge: String = switch file.status {
-        case .modified: "M"
-        case .added: "A"
-        case .deleted: "D"
-        case .untracked: "U"
-        }
-        let dirty = (document?.isDirty(file) == true ? "● " : "") + (file.changedOnDisk ? "⚠ changed on disk · " : "")
-        let comments = file.openThreadCount > 0 ? "    💬 \(file.openThreadCount)" : ""
-        let text = "\(file.collapsed ? "▸" : "▾") \(dirty)\(badge)  \(file.path)    +\(file.added) −\(file.removed)\(comments)"
-        let hf = DiffStyle.headerFont
-        draw(CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: Self.headerAttrs)),
-             x: 12, y: y + (h - hf.ascender + hf.descender) / 2, baseline: hf.ascender, in: ctx)
-    }
-
-    /// The header of the file at the top of the viewport stays pinned, and is
-    /// pushed up by the next file's header.
-    private func drawStickyHeader(_ doc: ReviewDocumentView, top: CGFloat, width: CGFloat, in ctx: CGContext) {
-        let i = doc.index(at: top)
-        guard i < doc.files.count, doc.tops[i] < top else { return }
-        let file = doc.files[i]
-        guard !file.collapsed else { return }
-        let fileBottom = doc.tops[i] + file.height - FileLayout.spacing - top
-        let y = min(0, fileBottom - FileLayout.headerHeight)
-        drawHeader(file, y: y, width: width, in: ctx)
+        FileHeader.draw(file, dirty: document?.isDirty(file) == true, y: y, width: width)
+        ctx.textMatrix = CGAffineTransform(scaleX: 1, y: -1) // AppKit text drawing resets it; CTLineDraw needs it
     }
 
     // MARK: Drawing helpers
@@ -173,6 +151,6 @@ final class ReviewCanvasView: NSView {
     override func mouseDown(with event: NSEvent) {
         guard let doc = document else { return }
         let p = convert(event.locationInWindow, from: nil)
-        doc.click(atDocumentY: frame.minY + p.y, x: p.x, stickyHeaderHit: p.y < FileLayout.headerHeight)
+        doc.click(atDocumentY: frame.minY + p.y, x: p.x)
     }
 }

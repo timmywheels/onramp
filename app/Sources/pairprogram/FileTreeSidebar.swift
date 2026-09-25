@@ -308,12 +308,14 @@ private final class TreeCanvas: NSView {
                 icon(chevron, onAccent ? .white : .tertiaryLabelColor)?.draw(in: NSRect(x: x, y: y + 7, width: 9, height: 10))
             }
             x += 12
-            let (symbol, tint): (String, NSColor) = switch file?.status {
+            let viewed = file?.viewed == true
+            var (symbol, tint): (String, NSColor) = switch file?.status {
             case nil: ("folder", .secondaryLabelColor)
             case .added?, .untracked?: ("doc.badge.plus", .systemGreen)
             case .deleted?: ("doc.badge.minus", .systemRed)
             case .modified?: ("doc", .systemOrange)
             }
+            if viewed { (symbol, tint) = ("checkmark.circle.fill", .tertiaryLabelColor) }
             icon(symbol, onAccent ? .white : tint)?.draw(in: NSRect(x: x, y: y + 5, width: 14, height: 14))
             x += 20
 
@@ -328,7 +330,7 @@ private final class TreeCanvas: NSView {
             counts.draw(at: NSPoint(x: rowRect.maxX - 6 - cw, y: y + 6))
 
             let dirty = file != nil && (sb.isDirty?(node.fileIndex!) ?? false)
-            let nameColor: NSColor = onAccent ? .white : (file?.status == .deleted ? .secondaryLabelColor : .labelColor)
+            let nameColor: NSColor = onAccent ? .white : (viewed ? .secondaryLabelColor : file?.status == .deleted ? .secondaryLabelColor : .labelColor)
             let name = NSAttributedString(string: (dirty ? "● " : "") + node.name,
                                           attributes: [.font: nameFont, .foregroundColor: nameColor, .paragraphStyle: truncating])
             name.draw(with: NSRect(x: x, y: y + 4, width: max(0, rowRect.maxX - 12 - cw - x), height: 16), options: [.usesLineFragmentOrigin])

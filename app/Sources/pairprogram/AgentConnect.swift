@@ -142,60 +142,39 @@ final class AgentConnectViewController: NSViewController {
     private var states: [AgentIntegration.State] = []
 
     override func loadView() {
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
-        stack.widthAnchor.constraint(equalToConstant: Self.width + 32).isActive = true
+        let stack = PopoverUI.stack([])
+        PopoverUI.add(PopoverUI.title("Connect your coding agent"), to: stack, spacingAfter: 6)
+        PopoverUI.add(PopoverUI.note("""
+        Adds pairprogram as an MCP server in the agent's settings, so it can read your review \
+        comments, reply and resolve them when you ask. Nothing leaves your machine, and you can \
+        disconnect anytime.
+        """), to: stack, spacingAfter: 14)
 
-        let title = NSTextField(labelWithString: "Connect your coding agent")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        stack.addArrangedSubview(title)
-        stack.addArrangedSubview(note("""
-        Connecting adds pairprogram as an MCP server in that agent's settings. When you ask it to, \
-        the agent can then read your review comments, reply, and resolve them. Nothing leaves your \
-        machine, and you can disconnect anytime.
-        """))
-
-        for agent in AgentIntegration.all {
+        for (i, agent) in AgentIntegration.all.enumerated() {
             let name = NSTextField(labelWithString: agent.name)
-            name.font = .systemFont(ofSize: 12, weight: .medium)
-            name.widthAnchor.constraint(equalToConstant: 110).isActive = true
+            name.font = .systemFont(ofSize: 13, weight: .medium)
             let status = NSTextField(labelWithString: "Checking…")
-            status.font = .systemFont(ofSize: 11)
+            status.font = .systemFont(ofSize: 11.5)
             status.textColor = .secondaryLabelColor
-            status.widthAnchor.constraint(equalToConstant: 130).isActive = true
+            let text = NSStackView(views: [name, status])
+            text.orientation = .vertical
+            text.alignment = .leading
+            text.spacing = 1
             let button = NSButton(title: "Connect", target: self, action: #selector(toggle(_:)))
-            button.bezelStyle = .rounded
-            button.controlSize = .small
+            button.bezelStyle = .push
             button.isEnabled = false
             button.tag = rows.count
-            button.widthAnchor.constraint(equalToConstant: 96).isActive = true
-            let spacer = NSView()
-            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            let row = NSStackView(views: [name, status, spacer, button])
-            row.spacing = 10
-            row.widthAnchor.constraint(equalToConstant: Self.width).isActive = true
-            stack.addArrangedSubview(row)
+            button.widthAnchor.constraint(greaterThanOrEqualToConstant: 100).isActive = true
+            if i > 0 { PopoverUI.add(PopoverUI.separator(), to: stack, spacingAfter: 10) }
+            PopoverUI.add(PopoverUI.row([text], [button]), to: stack, spacingAfter: 10)
             rows.append((agent, status, button))
             states.append(.checking)
         }
-        stack.addArrangedSubview(note("Then ask your agent to “address my pairprogram comments”. In Claude Code, type /pairprogram:address-comments."))
-        view = stack
-        preferredContentSize = stack.fittingSize
+        stack.setCustomSpacing(16, after: stack.arrangedSubviews.last!)
+        PopoverUI.add(PopoverUI.note("Then ask your agent to “address my pairprogram comments”. In Claude Code: /pairprogram:address-comments", size: 11.5), to: stack)
+        view = PopoverUI.container(stack)
+        preferredContentSize = view.frame.size
         refresh()
-    }
-
-    private static let width: CGFloat = 400
-
-    private func note(_ s: String) -> NSTextField {
-        let f = NSTextField(wrappingLabelWithString: s)
-        f.font = .systemFont(ofSize: 11.5)
-        f.textColor = .secondaryLabelColor
-        f.preferredMaxLayoutWidth = Self.width
-        f.widthAnchor.constraint(equalToConstant: Self.width).isActive = true
-        return f
     }
 
     /// Status checks spawn each agent's CLI (~0.5 s); run them off the main thread.

@@ -5,7 +5,11 @@ import AppKit
 /// Prints timings. Uses the same input path as the keyboard.
 @MainActor
 enum SelfTest {
+    private static var started = false
+
     static func run(review: ReviewView) {
+        guard !started, ProcessInfo.processInfo.environment["PP_SELFTEST"] != nil else { return }
+        started = true // reloads (mode switches, ⌘R) call this again; tests run once
         let scrollView = review.scrollView
         let mode = ProcessInfo.processInfo.environment["PP_SELFTEST"]
         if mode == "jump" { return runJump(scrollView: scrollView) }
@@ -20,7 +24,7 @@ enum SelfTest {
                 // second click: next fold after the first expansion
                 let rows = layout.rows.filter { if case .fold = $0.kind { return true } else { return false } }
                 let target = doc.files[i].expanded.isEmpty ? rows[0] : rows[min(1, rows.count - 1)]
-                doc.click(atDocumentY: doc.frame(ofFile: i).minY + target.y + 2, x: 100, stickyHeaderHit: false)
+                doc.click(atDocumentY: doc.frame(ofFile: i).minY + target.y + 2, x: 100)
             }
             log("expanded \(doc.files[i].expanded)")
             _ = frame(review.scrollView, to: doc.frame(ofFile: i).minY)
@@ -49,6 +53,58 @@ enum SelfTest {
                                                eventNumber: 0, clickCount: 1, pressure: 1)!
                 tv.mouseDown(with: event)
                 log("before \(before) after \(doc.files[i].expanded)  editor height \(tv.fixedHeight)")
+            }
+            return
+        }
+        if mode == "sticky" {
+            // The reported bug: with an editor open in a file, clicking its pinned header must fold it,
+            // and clicking "Viewed" there must mark it (both used to go to the editor underneath).
+            Task { @MainActor in
+                let doc = review.document
+                guard doc.files.count > 1, doc.activateEditor(1, offset: 0) != nil else { return log("no editor") }
+                _ = frame(review.scrollView, to: doc.frame(ofFile: 1).minY + 120)
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                let sticky = doc.stickyHeader
+                @MainActor func click(_ p: CGPoint) {
+                    let e = NSEvent.mouseEvent(with: .leftMouseDown, location: sticky.convert(p, to: nil), modifierFlags: [], timestamp: 0,
+                                               windowNumber: sticky.window!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+                    let hit = sticky.window!.contentView!.hitTest(sticky.window!.contentView!.convert(e.locationInWindow, from: nil))
+                    log("click \(p) → \(hit.map { String(describing: type(of: $0)) } ?? "nil") sticky.frame \(sticky.frame) hidden \(sticky.isHidden)")
+                    sticky.window!.sendEvent(e) // real hit testing: whatever view is on top gets it
+                }
+                log("sticky shown \(!sticky.isHidden) for file \(sticky.fileIndex)")
+                click(CGPoint(x: 200, y: 10))
+                log("after header click: collapsed \(doc.files[1].collapsed)")
+                doc.toggleCollapse(1) // open again
+                _ = frame(review.scrollView, to: doc.frame(ofFile: 1).minY + 120)
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                let v = FileHeader.viewedRect(width: sticky.bounds.width)
+                click(CGPoint(x: v.minX + 5, y: 10))
+                log("after Viewed click: viewed \(doc.files[1].viewed) collapsed \(doc.files[1].collapsed)")
+                doc.toggleViewed(1) // leave it as it was
+                log("done")
+            }
+            return
+        }
+        if mode == "ui" {
+            // Screenshot setup: file 0 viewed, scrolled into file 1 (sticky header), then a popover.
+            Task { @MainActor in
+                let doc = review.document
+                if doc.files.count > 1, !doc.files[0].viewed, ProcessInfo.processInfo.environment["PP_NO_VIEW"] == nil { doc.toggleViewed(0) }
+                if doc.files.count > 1 { _ = frame(review.scrollView, to: doc.frame(ofFile: 1).minY + 140) }
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if let w = review.window, let screen = w.screen {
+                    let f = w.frame
+                    log("window \(Int(f.minX)),\(Int(screen.frame.height - f.maxY)),\(Int(f.width)),\(Int(f.height)) id \(w.windowNumber)")
+                }
+                log("ready")
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                let popover = ProcessInfo.processInfo.environment["PP_POPOVER"]
+                if popover == "review" { review.showReview() }
+                if popover == "connect" { review.showConnect() }
+                try? await Task.sleep(nanoseconds: 500_000_000)
+                let ids = NSApp.windows.filter { $0 !== review.window && $0.isVisible }.map { "\($0.windowNumber)" }
+                log("popover ids \(ids.joined(separator: ","))")
             }
             return
         }
@@ -221,7 +277,7 @@ enum SelfTest {
             // Click the first two file headers, as a user would.
             let doc = review.document
             for i in [0, 1] where i < doc.files.count {
-                doc.click(atDocumentY: doc.frame(ofFile: i).minY + 5, x: 20, stickyHeaderHit: false)
+                doc.click(atDocumentY: doc.frame(ofFile: i).minY + 5, x: 20)
             }
             return log("folded \(doc.files.prefix(2).map(\.path)); collapsed=\(doc.files.prefix(3).map(\.collapsed))")
         }

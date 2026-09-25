@@ -91,13 +91,19 @@ final class AgentRunner {
 /// GitHub's "Finish your review": summary, verdict, and who to send it to.
 final class ReviewSubmitViewController: NSViewController {
     private let summary = NSTextView()
-    private let verdict = NSSegmentedControl(labels: ["Comment", "Approve", "Request changes"], trackingMode: .selectOne, target: nil, action: nil)
+    private var verdictButtons: [NSButton] = []
     private let sendTo = NSPopUpButton()
     private let pending: Int
     private let repo: String
 
     var onSubmit: ((_ body: String, _ verdict: Verdict, _ target: AgentRunner.Target) -> Void)?
     var onDiscard: (() -> Void)?
+
+    private static let verdicts: [(Verdict, String, String)] = [
+        (.comment, "Comment", "General feedback, nothing blocking."),
+        (.approve, "Approve", "Good to go to a human reviewer."),
+        (.requestChanges, "Request changes", "The agent should address these before this moves on."),
+    ]
 
     init(pending: Int, repo: String) {
         self.pending = pending
@@ -108,61 +114,84 @@ final class ReviewSubmitViewController: NSViewController {
     required init?(coder: NSCoder) { fatalError() }
 
     override func loadView() {
-        let width: CGFloat = 420
-        let stack = NSStackView()
-        stack.orientation = .vertical
-        stack.alignment = .leading
-        stack.spacing = 10
-        stack.edgeInsets = NSEdgeInsets(top: 14, left: 16, bottom: 14, right: 16)
+        let subtitle = switch pending {
+        case 0: "No pending comments. You can still leave a summary."
+        case 1: "Publishes your 1 pending comment."
+        default: "Publishes your \(pending) pending comments."
+        }
+        let stack = PopoverUI.stack([])
+        PopoverUI.add(PopoverUI.title("Finish your review"), to: stack, spacingAfter: 4)
+        PopoverUI.add(PopoverUI.note(subtitle), to: stack, spacingAfter: 14)
+        PopoverUI.add(summaryField(), to: stack, spacingAfter: 16)
 
-        let title = NSTextField(labelWithString: "Finish your review")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        stack.addArrangedSubview(title)
+        let initial = pending > 0 ? 2 : 0
+        for (i, (_, title, detail)) in Self.verdicts.enumerated() {
+            let radio = NSButton(radioButtonWithTitle: title, target: self, action: #selector(verdictPicked(_:)))
+            radio.font = .systemFont(ofSize: 13, weight: .medium)
+            radio.tag = i
+            radio.state = i == initial ? .on : .off
+            verdictButtons.append(radio)
+            let detailLabel = PopoverUI.note(detail, size: 11.5)
+            let option = NSStackView(views: [radio, detailLabel])
+            option.orientation = .vertical
+            option.alignment = .leading
+            option.spacing = 1
+            detailLabel.leadingAnchor.constraint(equalTo: radio.leadingAnchor, constant: 20).isActive = true // under the title, past the circle
+            PopoverUI.add(option, to: stack, spacingAfter: i == Self.verdicts.count - 1 ? 16 : 8)
+        }
 
-        let info = NSTextField(labelWithString: pending == 1 ? "1 pending comment will be published." : "\(pending) pending comments will be published.")
-        info.font = .systemFont(ofSize: 11.5)
-        info.textColor = .secondaryLabelColor
-        stack.addArrangedSubview(info)
+        PopoverUI.add(PopoverUI.separator(), to: stack, spacingAfter: 14)
 
+        let sendLabel = NSTextField(labelWithString: "Then send it to")
+        sendLabel.font = .systemFont(ofSize: 13)
+        sendTo.addItems(withTitles: AgentRunner.Target.allCases.map(\.title))
+        sendTo.selectItem(at: AgentRunner.Target.allCases.firstIndex(of: AgentRunner.savedTarget(repo: repo)) ?? 0)
+        PopoverUI.add(PopoverUI.row([sendLabel], [sendTo]), to: stack, spacingAfter: 18)
+
+        let submit = NSButton(title: "Submit review", target: self, action: #selector(submitClicked))
+        submit.bezelStyle = .push
+        submit.keyEquivalent = "\r"
+        let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelClicked))
+        cancel.bezelStyle = .push
+        cancel.keyEquivalent = "\u{1b}"
+        var leading: [NSView] = []
+        if pending > 0 {
+            let discard = NSButton(title: "Discard pending", target: self, action: #selector(discardClicked))
+            discard.bezelStyle = .push
+            discard.contentTintColor = .systemRed
+            leading.append(discard)
+        }
+        PopoverUI.add(PopoverUI.row(leading, [cancel, submit]), to: stack)
+
+        view = PopoverUI.container(stack)
+        preferredContentSize = view.frame.size
+    }
+
+    private func summaryField() -> NSView {
         summary.isRichText = false
-        summary.font = .systemFont(ofSize: 12.5)
-        summary.textContainerInset = NSSize(width: 4, height: 6)
+        summary.allowsUndo = true
+        summary.font = .systemFont(ofSize: 13)
+        summary.textContainerInset = NSSize(width: 6, height: 8)
         summary.isVerticallyResizable = true
         summary.autoresizingMask = [.width]
-        summary.setAccessibilityPlaceholderValue("Leave a summary (optional)")
+        summary.textContainer?.widthTracksTextView = true
+        summary.drawsBackground = false
+        summary.setValue(NSAttributedString(string: "Leave a summary (optional)", attributes: [
+            .font: NSFont.systemFont(ofSize: 13), .foregroundColor: NSColor.placeholderTextColor,
+        ]), forKey: "placeholderAttributedString")
         let scroll = NSScrollView()
         scroll.documentView = summary
         scroll.hasVerticalScroller = true
-        scroll.borderType = .bezelBorder
-        scroll.widthAnchor.constraint(equalToConstant: width).isActive = true
-        scroll.heightAnchor.constraint(equalToConstant: 90).isActive = true
-        stack.addArrangedSubview(scroll)
-
-        verdict.selectedSegment = pending > 0 ? 2 : 0
-        stack.addArrangedSubview(verdict)
-
-        let sendLabel = NSTextField(labelWithString: "Send to agent:")
-        sendLabel.font = .systemFont(ofSize: 12)
-        sendTo.addItems(withTitles: AgentRunner.Target.allCases.map(\.title))
-        sendTo.selectItem(at: AgentRunner.Target.allCases.firstIndex(of: AgentRunner.savedTarget(repo: repo)) ?? 0)
-        let sendRow = NSStackView(views: [sendLabel, sendTo])
-        sendRow.spacing = 8
-        stack.addArrangedSubview(sendRow)
-
-        let discard = NSButton(title: "Discard pending", target: self, action: #selector(discardClicked))
-        discard.bezelStyle = .rounded
-        discard.isHidden = pending == 0
-        let submit = NSButton(title: "Submit review", target: self, action: #selector(submitClicked))
-        submit.bezelStyle = .rounded
-        submit.keyEquivalent = "\r"
-        let spacer = NSView()
-        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        let buttons = NSStackView(views: [discard, spacer, submit])
-        buttons.widthAnchor.constraint(equalToConstant: width).isActive = true
-        stack.addArrangedSubview(buttons)
-
-        view = stack
-        preferredContentSize = stack.fittingSize
+        scroll.autohidesScrollers = true
+        scroll.borderType = .noBorder
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .textBackgroundColor
+        scroll.wantsLayer = true
+        scroll.layer?.cornerRadius = 6
+        scroll.layer?.borderWidth = 1
+        scroll.layer?.borderColor = NSColor.separatorColor.cgColor
+        scroll.heightAnchor.constraint(equalToConstant: 84).isActive = true
+        return scroll
     }
 
     override func viewDidAppear() {
@@ -170,16 +199,17 @@ final class ReviewSubmitViewController: NSViewController {
         view.window?.makeFirstResponder(summary)
     }
 
-    @objc private func submitClicked() {
-        let v: Verdict = switch verdict.selectedSegment {
-        case 1: .approve
-        case 2: .requestChanges
-        default: .comment
-        }
-        let target = AgentRunner.Target.allCases[max(0, sendTo.indexOfSelectedItem)]
-        AgentRunner.save(target, repo: repo)
-        onSubmit?(summary.string.trimmingCharacters(in: .whitespacesAndNewlines), v, target)
+    @objc private func verdictPicked(_ sender: NSButton) {
+        for b in verdictButtons { b.state = b === sender ? .on : .off }
     }
 
+    @objc private func submitClicked() {
+        let i = verdictButtons.firstIndex { $0.state == .on } ?? 0
+        let target = AgentRunner.Target.allCases[max(0, sendTo.indexOfSelectedItem)]
+        AgentRunner.save(target, repo: repo)
+        onSubmit?(summary.string.trimmingCharacters(in: .whitespacesAndNewlines), Self.verdicts[i].0, target)
+    }
+
+    @objc private func cancelClicked() { view.window?.performClose(nil) }
     @objc private func discardClicked() { onDiscard?() }
 }

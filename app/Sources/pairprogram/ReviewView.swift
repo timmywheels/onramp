@@ -5,12 +5,16 @@ final class ReviewView: NSView {
     private let repoPath: String
     let scrollView = NSScrollView()
     let document: ReviewDocumentView
+    private let statusBar = StatusBarView()
     private let statusLabel = NSTextField(labelWithString: "")
+    private let progress = ProgressBarView()
+    private let progressLabel = NSTextField(labelWithString: "")
     private let agentButton = NSButton(title: "Connect an agent…", target: nil, action: nil)
     private let reviewButton = NSButton(title: "Review changes", target: nil, action: nil)
     /// Branch (everything since you forked from main, like a PR) vs uncommitted only.
     private let modeToggle = NSSegmentedControl(labels: ["Branch", "Uncommitted"], trackingMode: .selectOne, target: nil, action: nil)
     private var base: ReviewBase?
+    private var statusParts: [(priority: Int, text: NSAttributedString)] = []
     private let runner = AgentRunner()
     private var reviewPopover: NSPopover?
     private var agentTimer: Timer?
@@ -32,26 +36,27 @@ final class ReviewView: NSView {
         scrollView.contentView.postsBoundsChangedNotifications = true
         addSubview(scrollView)
 
-        statusLabel.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
-        statusLabel.textColor = .secondaryLabelColor
-        addSubview(statusLabel)
-        agentButton.bezelStyle = .inline
-        agentButton.controlSize = .small
+        addSubview(statusBar)
+        statusLabel.lineBreakMode = .byTruncatingTail
+        statusLabel.cell?.truncatesLastVisibleLine = true
+        progressLabel.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
+        progressLabel.textColor = .secondaryLabelColor
+        progress.toolTip = "Files marked Viewed"
+        agentButton.isBordered = false
         agentButton.target = self
         agentButton.action = #selector(agentButtonClicked)
-        addSubview(agentButton)
-        reviewButton.bezelStyle = .rounded
+        reviewButton.bezelStyle = .push
         reviewButton.controlSize = .small
+        reviewButton.font = .systemFont(ofSize: 11.5, weight: .medium)
         reviewButton.target = self
         reviewButton.action = #selector(showReview)
-        addSubview(reviewButton)
         modeToggle.controlSize = .small
-        modeToggle.font = .systemFont(ofSize: 11)
+        modeToggle.font = .systemFont(ofSize: 11.5)
         modeToggle.target = self
         modeToggle.action = #selector(modeChanged)
         modeToggle.setToolTip("All changes on this branch, committed or not (like a pull request)", forSegment: 0)
         modeToggle.setToolTip("Only changes that aren't committed yet", forSegment: 1)
-        addSubview(modeToggle)
+        for v in [progress, progressLabel, statusLabel, modeToggle, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
         runner.onChange = { [weak self] in self?.updateAgents() }
         // Agents come and go (sessions start/end); poll cheaply.
         agentTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -71,22 +76,40 @@ final class ReviewView: NSView {
 
     @objc private func styleChanged() {
         scrollView.backgroundColor = DiffStyle.background
+        statusBar.needsDisplay = true
+        progress.needsDisplay = true
         document.styleChanged()
     }
 
     override func layout() {
         super.layout()
-        let statusHeight: CGFloat = 22
-        agentButton.sizeToFit()
-        agentButton.frame.origin = NSPoint(x: bounds.width - agentButton.frame.width - 10, y: 2)
-        reviewButton.sizeToFit()
-        reviewButton.frame.origin = NSPoint(x: agentButton.frame.minX - reviewButton.frame.width - 12, y: 0)
-        modeToggle.sizeToFit()
-        modeToggle.frame.origin = NSPoint(x: reviewButton.frame.minX - modeToggle.frame.width - 12, y: 1)
-        statusLabel.frame = NSRect(x: 12, y: 3, width: modeToggle.frame.minX - 24, height: 16)
-        scrollView.frame = NSRect(x: 0, y: statusHeight, width: bounds.width, height: bounds.height - statusHeight)
+        let h = StatusBarView.height
+        statusBar.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
+        scrollView.frame = NSRect(x: 0, y: h, width: bounds.width, height: bounds.height - h)
         document.width = scrollView.contentSize.width
         DiffStyle.paintWidth = document.width
+
+        // Everything centered on the bar's midline; 12pt between groups.
+        func center(_ v: NSView, x: CGFloat) {
+            v.frame.origin = NSPoint(x: x, y: round((h - v.frame.height) / 2) + 0.5)
+        }
+        var right = bounds.width - 14
+        for v in [agentButton, reviewButton, modeToggle] as [NSControl] {
+            v.sizeToFit()
+            right -= v.frame.width
+            center(v, x: right)
+            right -= 12
+        }
+        var left: CGFloat = 14
+        progress.frame = NSRect(x: left, y: round((h - 6) / 2), width: 72, height: 6)
+        left = progress.frame.maxX + 8
+        progressLabel.sizeToFit()
+        center(progressLabel, x: left)
+        left = progressLabel.frame.maxX + 18
+        statusLabel.attributedStringValue = fittedStatus(width: right - 6 - left)
+        statusLabel.sizeToFit()
+        statusLabel.frame.size.width = max(0, min(statusLabel.frame.width, right - 6 - left))
+        center(statusLabel, x: left)
     }
 
     func reload() {
@@ -117,14 +140,50 @@ final class ReviewView: NSView {
         let removed = document.files.reduce(0) { $0 + $1.removed }
         let dirty = document.dirtyCount
         let comments = document.openCommentCount
-        var against = "uncommitted only"
-        if let base, base.mode == .branch {
-            against = base.branch.map { b in "vs \(b)" + (base.commits > 0 ? " · \(base.commits) commit\(base.commits == 1 ? "" : "s")" : "") } ?? "vs HEAD (no main branch)"
+        let count = document.files.count
+        let viewed = document.viewedCount
+        progress.fraction = count == 0 ? 0 : CGFloat(viewed) / CGFloat(count)
+        progressLabel.stringValue = "\(viewed) / \(count) viewed"
+
+        // Parts in display order with a priority; when the bar is narrow the
+        // least important ones go whole, rather than truncating mid-word.
+        let font = NSFont.systemFont(ofSize: 11.5)
+        let digits = NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
+        func part(_ pieces: [(String, NSColor, NSFont)]) -> NSAttributedString {
+            let a = NSMutableAttributedString()
+            for (t, c, f) in pieces { a.append(NSAttributedString(string: t, attributes: [.font: f, .foregroundColor: c])) }
+            return a
         }
-        statusLabel.stringValue = "\(document.files.count) files  +\(added) −\(removed)  \(against)"
-            + (comments > 0 ? "  ·  💬 \(comments) open" : "")
-            + (dirty > 0 ? "  ·  \(dirty) unsaved (⌘S)" : "")
-            + "  ·  load \(String(format: "%.0f", loadMs))ms"
+        var parts: [(priority: Int, text: NSAttributedString)] = [
+            (0, part([("+\(added)", .systemGreen, digits), (" −\(removed)", .systemRed, digits)])),
+        ]
+        if let base, base.mode == .branch {
+            parts.append((2, part([(base.branch.map { "vs \($0)" } ?? "vs HEAD (no main branch found)", .secondaryLabelColor, font)])))
+            if base.commits > 0 { parts.append((4, part([("\(base.commits) commit\(base.commits == 1 ? "" : "s")", .secondaryLabelColor, font)]))) }
+        } else {
+            parts.append((2, part([("uncommitted changes", .secondaryLabelColor, font)])))
+        }
+        if comments > 0 { parts.append((1, part([("\(comments) open comment\(comments == 1 ? "" : "s")", DiffStyle.accent, font)]))) }
+        if dirty > 0 { parts.append((1, part([("\(dirty) unsaved (⌘S)", .systemOrange, font)]))) }
+        statusParts = parts
+        statusLabel.toolTip = String(format: "Loaded in %.0f ms", loadMs)
+        needsLayout = true
+    }
+
+    /// The status parts that fit in `width`, dropping the least important first.
+    private func fittedStatus(width: CGFloat) -> NSAttributedString {
+        let dot = NSAttributedString(string: "   ·   ", attributes: [.font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: NSColor.tertiaryLabelColor])
+        var parts = statusParts
+        while true {
+            let joined = NSMutableAttributedString()
+            for (i, p) in parts.enumerated() {
+                if i > 0 { joined.append(dot) }
+                joined.append(p.text)
+            }
+            if joined.size().width <= width || parts.count <= 1 { return joined }
+            let drop = parts.indices.max { parts[$0].priority < parts[$1].priority }!
+            parts.remove(at: drop)
+        }
     }
 
     @objc private func modeChanged() {
@@ -158,7 +217,7 @@ final class ReviewView: NSView {
         guard agentButton.title != title else { return }
         agentButton.attributedTitle = NSAttributedString(string: title, attributes: [
             .foregroundColor: color,
-            .font: NSFont.systemFont(ofSize: 11),
+            .font: NSFont.systemFont(ofSize: 11.5),
         ])
         agentButton.toolTip = agents.isEmpty ? "Set up an agent to read and resolve your comments over MCP" : "Connected over MCP. Click for setup."
         needsLayout = true
@@ -231,6 +290,10 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     private var allThreads: [Thread] = []
     private var commentsWatcher: DispatchSourceFileSystemObject?
     private let hover = HoverOverlay()
+    let stickyHeader = StickyHeaderView()
+    /// path → fingerprint of the file when you marked it viewed.
+    private lazy var viewedFingerprints = ViewedStore.load(repoPath)
+    var viewedCount: Int { files.filter(\.viewed).count }
     private var hoverTarget: (path: String, target: CommentTarget)?
     private lazy var author: String = Self.gitUserName(repoPath) ?? "you"
 
@@ -268,6 +331,9 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
             self.withFile(t.path) { self.startComment($0, t.target) }
         }
         addSubview(hover)
+        stickyHeader.document = self
+        stickyHeader.isHidden = true
+        addSubview(stickyHeader) // on top of editors, comments and hover
     }
 
     // MARK: Hover
@@ -284,6 +350,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     /// Highlight the code line under the pointer (in the canvas or an editor).
     private func updateHover(_ p: NSPoint) {
         guard !files.isEmpty, p.y >= 0 else { return setHover(nil) }
+        if !stickyHeader.isHidden, p.y < stickyHeader.frame.maxY { return setHover(nil) } // under the pinned header
         let i = index(at: p.y)
         let layout = files[i].layout
         let row = layout.rows[layout.rowIndex(at: p.y - tops[i])]
@@ -314,6 +381,10 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         commentViews.values.forEach { $0.removeFromSuperview() }
         commentViews = [:]
         files = newFiles
+        for f in files {
+            applyViewed(f)
+            f.collapsed = f.viewed
+        }
         indexByPath = Dictionary(uniqueKeysWithValues: files.enumerated().map { ($1.path, $0) })
         recomputeTops() // before anything can trigger a layout pass against the new files
         reloadThreads()
@@ -384,6 +455,27 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         let v = viewport
         canvas.frame = NSRect(x: 0, y: v.minY, width: width, height: v.height)
         canvas.needsDisplay = true
+        positionStickyHeader(v)
+    }
+
+    /// Pin the header of the file at the top of the viewport; the next file's
+    /// header pushes it up.
+    private func positionStickyHeader(_ v: NSRect) {
+        let i = files.isEmpty ? -1 : index(at: v.minY)
+        guard i >= 0, i < files.count, tops[i] < v.minY, !files[i].collapsed else {
+            stickyHeader.isHidden = true
+            return
+        }
+        let h = FileLayout.headerHeight
+        let fileBottom = tops[i] + files[i].height - FileLayout.spacing
+        let frame = NSRect(x: 0, y: min(v.minY, fileBottom - h), width: width, height: h)
+        if stickyHeader.fileIndex != i || stickyHeader.frame != frame {
+            stickyHeader.fileIndex = i
+            stickyHeader.frame = frame
+            window?.invalidateCursorRects(for: stickyHeader)
+        }
+        stickyHeader.isHidden = false
+        stickyHeader.needsDisplay = true
     }
 
     func didScroll() {
@@ -502,16 +594,19 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     // MARK: Clicks
 
-    func click(atDocumentY y: CGFloat, x: CGFloat, stickyHeaderHit: Bool) {
+    func click(atDocumentY y: CGFloat, x: CGFloat) {
         let i = index(at: y)
         guard i < files.count else { return }
-        if stickyHeaderHit, tops[i] < viewport.minY { return toggleCollapse(i) }
         let file = files[i]
         let layout = file.layout
         let r = layout.rowIndex(at: y - tops[i])
         switch layout.rows[r].kind {
         case .header:
-            toggleCollapse(i)
+            if FileHeader.viewedRect(width: width).insetBy(dx: -8, dy: 0).contains(CGPoint(x: x, y: FileLayout.headerHeight / 2)) {
+                toggleViewed(i)
+            } else {
+                toggleCollapse(i)
+            }
         case let .line(line, _):
             if x < DiffStyle.gutterWidth { return startComment(i, CommentTarget(line: line, old: false)) } // clicked the line number
             activateEditor(i, offset: file.lineStarts[line] + canvas.column(in: file, line: line, x: x))
@@ -550,6 +645,32 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         recomputeTops()
         needsLayout = true
         canvas.needsDisplay = true
+    }
+
+    // MARK: Viewed
+
+    /// Viewed if you marked it and it hasn't changed since.
+    private func applyViewed(_ f: ReviewFile) {
+        guard let saved = viewedFingerprints[f.path] else { f.viewed = false; f.changedSinceViewed = false; return }
+        f.viewed = saved == ViewedStore.fingerprint(f)
+        f.changedSinceViewed = !f.viewed
+    }
+
+    /// GitHub's "Viewed" checkbox: marking folds the file, unmarking opens it.
+    func toggleViewed(_ i: Int) {
+        let f = files[i]
+        if !f.viewed, editors[i]?.isDirty == true { NSSound.beep(); return } // save first
+        f.viewed.toggle()
+        f.changedSinceViewed = false
+        viewedFingerprints[f.path] = f.viewed ? ViewedStore.fingerprint(f) : nil
+        ViewedStore.save(repoPath, viewedFingerprints)
+        if f.collapsed != f.viewed {
+            toggleCollapse(i)
+        } else {
+            canvas.needsDisplay = true
+            onChange?()
+        }
+        onFileChanged?(i)
     }
 
     func toggleCollapse(_ i: Int) {
@@ -608,11 +729,13 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         var newIndex: [String: Int] = [:]
         for (i, f) in newFiles.enumerated() { newIndex[f.path] = i }
         for f in newFiles {
-            guard let old = indexByPath[f.path].map({ files[$0] }) else { continue }
+            guard let old = indexByPath[f.path].map({ files[$0] }) else { applyViewed(f); f.collapsed = f.viewed; continue }
             f.collapsed = old.collapsed
             f.expanded = old.expanded
             f.composer = old.composer
             f.replyingTo = old.replyingTo
+            applyViewed(f)
+            if old.viewed, !f.viewed { f.collapsed = false } // changed since you viewed it: show it again
         }
 
         var kept: [Int: DiffEditor] = [:]

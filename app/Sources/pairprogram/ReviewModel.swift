@@ -17,6 +17,10 @@ final class ReviewFile {
     private(set) var hunks: [DiffHunk]
     private(set) var lineStarts: [Int] = []
     var collapsed = false
+    /// Marked "Viewed" (GitHub-style); viewed files start folded.
+    var viewed = false
+    /// Was viewed, then changed (e.g. the agent edited it).
+    var changedSinceViewed = false
     /// The file changed on disk while you had unsaved edits in it.
     var changedOnDisk = false
     /// Unchanged line ranges the user expanded, like GitHub's "show more lines".
