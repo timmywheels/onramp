@@ -449,8 +449,10 @@ enum SelfTest {
         if mode == "snap" { // a picture of the window (ONRAMP_SNAP_OUT), for checking looks
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 800_000_000)
-                review.document.scrollToFile(min(2, max(0, review.document.files.count - 1)))
-                (NSApp.delegate as? AppDelegate)?.showPullRequests(nil)
+                let env = ProcessInfo.processInfo.environment, files = review.document.files
+                let target = env["ONRAMP_SNAP_FILE"].flatMap { f in files.firstIndex { $0.path.hasSuffix(f) } } ?? min(2, max(0, files.count - 1))
+                review.document.scrollToFile(target)
+                if env["ONRAMP_SNAP_PANEL"] == "prs" { (NSApp.delegate as? AppDelegate)?.showPullRequests(nil) }
                 try? await Task.sleep(nanoseconds: 2_500_000_000)
                 guard let out = ProcessInfo.processInfo.environment["ONRAMP_SNAP_OUT"], let window = review.window else { return log("no window") }
                 // screencapture draws it exactly as on screen (vibrancy included), even behind other windows.
