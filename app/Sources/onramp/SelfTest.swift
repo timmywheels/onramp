@@ -183,6 +183,34 @@ enum SelfTest {
             log("sent \(t.id) at line \(line + 1); claimed right away by: \(activeClaim(thread: try! loadThreads(repoRoot: repo).first { $0.id == t.id }!)?.agent ?? "nobody")")
             return
         }
+        if mode == "flicker" { // an agent writes one file: what gets rebuilt, and is it coloured when it lands?
+            Task { @MainActor in
+                let doc = review.document, repo = doc.repoRootForTests
+                try? await Task.sleep(nanoseconds: 1_500_000_000) // on-screen files get their colours
+                let before = Dictionary(doc.files.map { ($0.path, ObjectIdentifier($0)) }, uniquingKeysWith: { a, _ in a })
+                guard let target = doc.files.first(where: { $0.path.hasSuffix(".ts") && $0.syntax != nil }) else { return log("nothing coloured on screen") }
+                doc.scrollToFile(doc.files.firstIndex { $0 === target }!)
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                let url = URL(fileURLWithPath: repo).appendingPathComponent(target.path)
+                let text = try! String(contentsOf: url, encoding: .utf8)
+                try! (text + "export const touchedByAgent = 1;\n").write(to: url, atomically: true, encoding: .utf8)
+                var seen = false
+                for _ in 0..<40 { // watch each frame-ish until the reload lands
+                    try? await Task.sleep(nanoseconds: 25_000_000)
+                    guard let f = doc.files.first(where: { $0.path == target.path }), (f.newText as String).contains("touchedByAgent") else { continue }
+                    seen = true
+                    let rebuilt = doc.files.filter { before[$0.path] != ObjectIdentifier($0) }.map(\.path)
+                    log("rebuilt \(rebuilt.count) of \(doc.files.count) files: \(rebuilt)")
+                    log("changed file coloured when it landed: \(f.syntax != nil)")
+                    break
+                }
+                if !seen { log("reload never landed") }
+                try? text.write(to: url, atomically: true, encoding: .utf8)
+                try? await Task.sleep(nanoseconds: 400_000_000)
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if mode == "agentcheck" { // how each agent's connection is seen (and where we looked)
             DispatchQueue.global().async {
                 log("path starts: " + AgentIntegration.userPath.split(separator: ":").prefix(3).joined(separator: ":"))

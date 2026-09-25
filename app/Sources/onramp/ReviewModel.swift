@@ -159,6 +159,13 @@ final class ReviewFile {
         }
     }
 
+    /// The base version's colors, from the file this one replaces (same base text).
+    func adoptOldSyntax(_ spans: SyntaxSpans?) {
+        guard let spans, oldSyntax == nil else { return }
+        oldSyntax = spans
+        lineCache = [:]
+    }
+
     /// Colors computed elsewhere (the open editor) for exactly this text.
     func adoptSyntax(_ spans: SyntaxSpans, for text: String) {
         guard text == newText as String else { return }

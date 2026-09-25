@@ -1290,12 +1290,20 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         guard !reloading else { reloadAgain = true; return }
         reloading = true
         let repo = repoPath, rev = baseRev
+        let current = Dictionary(files.map { ($0.path, $0.newText as String) }, uniquingKeysWith: { a, _ in a })
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let diffs = try? loadReview(repoRoot: repo, baseRev: rev, target: nil)
+            // Colour files that changed and are on screen *before* they're swapped in: they'd
+            // otherwise draw plain for a moment, and an agent editing file after file strobes.
+            var colored: [String: SyntaxSpans] = [:]
+            for d in diffs ?? [] {
+                guard case let .text(_, newText, _, _) = d.body, current[d.path] != newText, Syntax.isOnScreen(d.path) else { continue }
+                if let spans = Syntax.highlightNow(path: d.path, text: newText) { colored[d.path] = spans }
+            }
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.reloading = false
-                if let diffs { self.merge(TreeOrder.sorted(diffs.map(ReviewFile.init))) }
+                if let diffs { self.merge(TreeOrder.sorted(diffs.map(ReviewFile.init)), colored: colored) }
                 if self.reloadAgain { self.reloadAgain = false; self.reloadFromDisk() }
             }
         }
@@ -1303,7 +1311,16 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     /// Swap in freshly loaded files, keeping per-file UI state, open editors
     /// (unsaved edits always win), comments, and the scroll position.
-    private func merge(_ newFiles: [ReviewFile]) {
+    private func merge(_ fresh: [ReviewFile], colored: [String: SyntaxSpans] = [:]) {
+        // A file whose text didn't change keeps its object: layout, colours, everything.
+        // (An agent usually touches one file; the rest must not so much as blink.)
+        let newFiles = fresh.map { f -> ReviewFile in
+            guard let old = indexByPath[f.path].map({ files[$0] }) else { return f }
+            if old.newText.isEqual(to: f.newText as String), old.oldText == f.oldText, old.hunks == f.hunks { return old }
+            if let spans = colored[f.path] { f.adoptSyntax(spans, for: f.newText as String) }
+            if old.oldText == f.oldText { f.adoptOldSyntax(old.oldSyntax) }
+            return f
+        }
         let v = viewport
         let anchorPath = files.isEmpty ? nil : files[index(at: v.minY)].path
         let anchorOffset = anchorPath.flatMap { p in indexByPath[p].map { v.minY - tops[$0] } } ?? 0

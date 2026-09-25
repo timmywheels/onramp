@@ -73,7 +73,12 @@ enum Syntax {
         lock.lock(); onScreen.insert(path); lock.unlock()
     }
 
-    private static func isOnScreen(_ path: String) -> Bool {
+    /// Highlight right now, on this (background) thread: for files about to be swapped in on screen.
+    static func highlightNow(path: String, text: String) -> SyntaxSpans? {
+        onramp.highlight(path: path, text: text).map(SyntaxSpans.init)
+    }
+
+    static func isOnScreen(_ path: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return onScreen.contains(path)
     }
