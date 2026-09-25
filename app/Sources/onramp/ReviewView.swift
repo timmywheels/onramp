@@ -102,6 +102,13 @@ final class ReviewView: NSView, NSPopoverDelegate {
         document.onChange = { [weak self] in self?.updateStatus(); self?.updateAgents(); self?.refreshGit() }
         document.onFileChanged = { [weak self] i in self?.onFileChanged?(i) }
         document.onCurrentFile = { [weak self] i in self?.onCurrentFile?(i) }
+        document.onNotice = { [weak self] text in
+            guard let window = self?.window else { return }
+            let alert = NSAlert()
+            alert.messageText = text
+            alert.beginSheetModal(for: window)
+        }
+        QuickSend.onChange = { [weak self] in self?.updateAgents() }
         NotificationCenter.default.addObserver(
             self, selector: #selector(didScroll), name: NSView.boundsDidChangeNotification, object: scrollView.contentView
         )
@@ -786,8 +793,23 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     /// Bring a comment thread into view (unfolding its file) and flash it.
     func scrollToThread(_ t: Thread) {
-        guard let i = files.firstIndex(where: { $0.path == t.path }) else { return }
+        guard let i = files.firstIndex(where: { $0.path == t.path }) else {
+            // Its file has no changes in this diff any more (e.g. the fix undid them): say so, don't do nothing.
+            onNotice?("\((t.path as NSString).lastPathComponent) isn't in this diff any more, so there's nowhere to show this comment. Its thread is still in the side panel.")
+            return
+        }
         if files[i].collapsed { setCollapsed(i, false) }
+        if t.status != .open, !ReviewFile.showResolved, !ReviewFile.revealed.contains(t.id) {
+            ReviewFile.revealed.insert(t.id) // show just this one resolved thread, in place
+            files[i].invalidateLayout()
+            if editors[i] != nil { syncEditor(i) }
+            layoutChanged()
+        }
+        guard files[i].threads.contains(where: { $0.thread.id == t.id && $0.line != nil }) else {
+            scrollToFile(i)
+            onNotice?("The line this comment was on has changed, so it can't be placed in the diff. Its thread is still in the side panel.")
+            return
+        }
         guard let row = files[i].layout.rows.first(where: { if case let .thread(id) = $0.kind { return id == t.id } else { return false } }),
               let clip = superview as? NSClipView else { return scrollToFile(i) }
         // Land with the commented line and a little context visible above the box.
@@ -1439,15 +1461,34 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         editors[i]?.setReveal(expanded: files[i].revealed, commentSpace: files[i].commentSpace, deletedCommentSpace: files[i].deletedCommentSpace)
     }
 
-    private func submitComment(_ i: Int, _ body: String, pending: Bool) {
+    private func submitComment(_ i: Int, _ body: String, pending: Bool, send sendNow: Bool = false) {
         let file = files[i]
         guard let target = file.composer else { return }
         do {
-            _ = try addThread(repoRoot: repoPath, path: file.path, text: target.old ? file.oldText : file.newText as String,
-                              line: UInt32(target.line), oldSide: target.old, author: author, body: body, pending: pending)
+            let thread = try addThread(repoRoot: repoPath, path: file.path, text: target.old ? file.oldText : file.newText as String,
+                                       line: UInt32(target.line), oldSide: target.old, author: author, body: body, pending: pending)
             file.composer = nil
             reloadThreads()
+            if sendNow { send(thread, file: i, line: target.line) }
         } catch { NSSound.beep() }
+    }
+
+    /// "Send to Claude" is offered while the diff is your working tree (the agent edits these files).
+    private var sendAgentName: String? {
+        guard !readOnly else { return nil }
+        return QuickSend.target(repo: repoPath) == .codex ? "Codex" : "Claude"
+    }
+
+    /// Something to tell you (a quick send that couldn't start or finish).
+    var onNotice: ((String) -> Void)?
+
+    /// Hand one thread to your agent now; its fix and answer show up live.
+    private func send(_ thread: Thread, file i: Int, line: Int) {
+        QuickSend.send(thread: thread, path: files[i].path, line: line, text: files[i].newText as String, repo: repoPath) { [weak self] error in
+            self?.reloadThreads()
+            if let error { self?.onNotice?(error) }
+        }
+        reloadThreads() // its claim: the thread shows "working" now
     }
 
     private func cancelComment(_ i: Int) {
@@ -1510,8 +1551,17 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     private func makeThreadView(_ located: LocatedThread, file i: Int, key: String) -> CommentThreadView {
         let view = CommentThreadView(located, replying: files[i].replyingTo == located.thread.id, editing: nil, me: author)
         view.inReview = pendingCount > 0
+        view.sendAgent = sendAgentName
         let id = located.thread.id
         let path = files[i].path
+        view.onReplyAndSend = { [weak self] text in
+            self?.withFile(path) { i in
+                guard let self else { return }
+                self.files[i].replyingTo = nil
+                self.threadAction(i) { _ = try reply(repoRoot: self.repoPath, id: id, author: self.author, body: text, pending: false) }
+                if let t = self.files[i].threads.first(where: { $0.thread.id == id }) { self.send(t.thread, file: i, line: Int(t.line ?? 0)) }
+            }
+        }
         view.onStartEdit = { [weak self] k in
             self?.withFile(path) { i in
                 guard let self else { return }
@@ -1588,6 +1638,8 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         view.input.onSubmit = { [weak self] text in self?.withFile(path) { self?.submitComment($0, text, pending: inReview) } }
         view.input.onSecondary = { [weak self] text in self?.withFile(path) { self?.submitComment($0, text, pending: !inReview) } }
         view.input.onCancel = { [weak self] in self?.withFile(path) { self?.cancelComment($0) } }
+        view.input.setSend(sendAgentName)
+        view.input.onSend = { [weak self] text in self?.withFile(path) { self?.submitComment($0, text, pending: false, send: true) } }
         addSubview(view, positioned: .below, relativeTo: hover)
         commentViews[key] = view
         return view

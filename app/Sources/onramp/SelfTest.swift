@@ -166,6 +166,23 @@ enum SelfTest {
             }
             return
         }
+        if mode == "quicksend" { // comment + Send, timed end to end (a real agent run)
+            let doc = review.document, repo = doc.repoRootForTests
+            guard let i = doc.files.firstIndex(where: { $0.path.hasSuffix("backfill_balances.py") }) else { return log("no file") }
+            let f = doc.files[i], text = f.newText as String
+            let line = text.components(separatedBy: "\n").firstIndex { $0.contains("balance = invoice.total") } ?? 10
+            let body = ProcessInfo.processInfo.environment["ONRAMP_SEND_BODY"] ?? "Rename `balance` to `amount_due` in this loop."
+            let t = try! addThread(repoRoot: repo, path: f.path, text: text, line: UInt32(line), oldSide: false, author: doc.reviewAuthor, body: body, pending: false)
+            let t0 = CACurrentMediaTime()
+            QuickSend.send(thread: t, path: f.path, line: line, text: text, repo: repo) { error in
+                let after = try! loadThreads(repoRoot: repo).first { $0.id == t.id }!
+                log(String(format: "done in %.1f s: %@; status %@; claim %@", CACurrentMediaTime() - t0, error ?? "ok", "\(after.status)", after.claim?.agent ?? "none"))
+                log("last entry: \(after.entries.last.map { "\($0.author): \($0.body)" } ?? "")")
+                NSApp.terminate(nil)
+            }
+            log("sent \(t.id) at line \(line + 1); claimed right away by: \(activeClaim(thread: try! loadThreads(repoRoot: repo).first { $0.id == t.id }!)?.agent ?? "nobody")")
+            return
+        }
         if mode == "agentcheck" { // how each agent's connection is seen (and where we looked)
             DispatchQueue.global().async {
                 log("path starts: " + AgentIntegration.userPath.split(separator: ":").prefix(3).joined(separator: ":"))
@@ -477,6 +494,13 @@ enum SelfTest {
                 let env = ProcessInfo.processInfo.environment, files = review.document.files
                 let target = env["ONRAMP_SNAP_FILE"].flatMap { f in files.firstIndex { $0.path.hasSuffix(f) } } ?? min(2, max(0, files.count - 1))
                 review.document.scrollToFile(target)
+                if let suffix = env["ONRAMP_SNAP_COMPOSE"], let i = review.document.files.firstIndex(where: { $0.path.hasSuffix(suffix) }) {
+                    review.document.startComment(i, CommentTarget(line: 12, old: false)) // like clicking + on a line
+                    review.document.composerView(i)?.input.textView.string = "Guard against a negative balance here."
+                }
+                if let id = env["ONRAMP_SNAP_THREAD"], let t = try? loadThreads(repoRoot: review.document.repoRootForTests).first(where: { $0.id == id }) {
+                    review.document.scrollToThread(t) // like clicking it in the side panel
+                }
                 if env["ONRAMP_SNAP_PANEL"] == "prs" { (NSApp.delegate as? AppDelegate)?.showPullRequests(nil) }
                 if let n = env["ONRAMP_SNAP_OPEN_PR"].flatMap(Int.init) { // catch the loading states mid-flight
                     (NSApp.delegate as? AppDelegate)?.showPullRequests(nil)

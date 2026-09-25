@@ -51,9 +51,11 @@ final class ReviewFile {
     }
 
     var visibleThreads: [LocatedThread] {
-        threads.filter { ReviewFile.showResolved || $0.thread.status == .open }
+        threads.filter { ReviewFile.showResolved || $0.thread.status == .open || ReviewFile.revealed.contains($0.thread.id) }
     }
     nonisolated(unsafe) static var showResolved = false
+    /// Resolved threads you clicked in the side panel: shown in place even while resolved ones are hidden.
+    nonisolated(unsafe) static var revealed: Set<String> = []
 
     var openThreadCount: Int { threads.filter { $0.thread.status == .open }.count }
 

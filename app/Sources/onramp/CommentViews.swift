@@ -46,12 +46,14 @@ enum CommentMetrics {
     }
 }
 
-/// Text input for comments: ⌘↩ submits, Esc cancels.
+/// Text input for comments: ⌘↩ submits, ⌘⇧↩ sends to your agent, Esc cancels.
 final class CommentTextView: NSTextView {
     var onSubmit: (() -> Void)?
+    var onSend: (() -> Void)?
     var onCancel: (() -> Void)?
 
     override func keyDown(with event: NSEvent) {
+        if event.keyCode == 36, event.modifierFlags.contains([.command, .shift]), let onSend { return onSend() } // ⌘⇧↩
         if event.keyCode == 36, event.modifierFlags.contains(.command) { return onSubmit?() ?? () } // ⌘↩
         super.keyDown(with: event)
     }
@@ -66,18 +68,39 @@ final class CommentInput: NSView {
     private let cancel = NSButton(title: "Cancel", target: nil, action: nil)
     private let submit: NSButton
     private let secondary = NSButton(title: "", target: nil, action: nil)
+    /// "Send to Claude": post it and have your agent take it on now (⌘⇧↩).
+    private let send = NSButton(title: "", target: nil, action: nil)
     private let hint = NSTextField(labelWithString: "⌘↩ to save · Esc to cancel")
+    private var primaryTitle = ""
     var onSubmit: ((String) -> Void)?
+    var onSend: ((String) -> Void)?
     var onSecondary: ((String) -> Void)?
     var onCancel: (() -> Void)?
 
     /// Primary (⌘↩) and optional second action, e.g. "Comment" + "Start a review".
     func setActions(primary: String, secondary title: String?) {
         submit.title = primary
+        primaryTitle = primary
         secondary.title = title ?? ""
         secondary.isHidden = title == nil
-        hint.stringValue = "⌘↩ \(primary.lowercased()) · Esc to cancel"
+        updateHint()
         needsLayout = true
+    }
+
+    /// Offer "Send to <agent>" (nil hides it).
+    func setSend(_ agent: String?) {
+        send.isHidden = agent == nil
+        send.title = agent.map { "Send to \($0)" } ?? ""
+        send.image = NSImage(systemSymbolName: "paperplane", accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
+        send.imagePosition = .imageLeading
+        send.toolTip = agent.map { "Post this and have \($0) take it on now (⌘⇧↩)" }
+        textView.onSend = agent == nil ? nil : { [weak self] in self?.fireSend() }
+        updateHint()
+        needsLayout = true
+    }
+
+    private func updateHint() {
+        hint.stringValue = send.isHidden ? "⌘↩ \(primaryTitle.lowercased()) · Esc to cancel" : "⌘↩ \(primaryTitle.lowercased()) · ⌘⇧↩ send · Esc"
     }
 
     override var isFlipped: Bool { true }
@@ -106,7 +129,9 @@ final class CommentInput: NSView {
         scroll.layer?.borderColor = DiffStyle.commentBorder.cgColor
         addSubview(scroll)
 
-        for b in [cancel, secondary, submit] {
+        send.isHidden = true
+        send.action = #selector(sendClicked)
+        for b in [cancel, secondary, send, submit] {
             b.bezelStyle = .rounded
             b.controlSize = .small
             b.target = self
@@ -130,9 +155,13 @@ final class CommentInput: NSView {
         scroll.frame = NSRect(x: 0, y: 0, width: bounds.width, height: CommentMetrics.inputHeight)
         textView.frame.size.width = scroll.contentSize.width
         let y = CommentMetrics.inputHeight + 6
-        submit.sizeToFit(); cancel.sizeToFit(); secondary.sizeToFit()
+        submit.sizeToFit(); cancel.sizeToFit(); secondary.sizeToFit(); send.sizeToFit()
         submit.frame.origin = NSPoint(x: bounds.width - submit.frame.width, y: y + 2)
         var left = submit.frame.minX
+        if !send.isHidden {
+            send.frame.origin = NSPoint(x: left - send.frame.width - 6, y: y + 2)
+            left = send.frame.minX
+        }
         if !secondary.isHidden {
             secondary.frame.origin = NSPoint(x: left - secondary.frame.width - 6, y: y + 2)
             left = secondary.frame.minX
@@ -146,6 +175,13 @@ final class CommentInput: NSView {
 
     @objc private func cancelClicked() { onCancel?() }
     @objc private func submitClicked() { fireSubmit() }
+    @objc private func sendClicked() { fireSend() }
+
+    private func fireSend() {
+        let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return NSSound.beep() }
+        onSend?(text)
+    }
     @objc private func secondaryClicked() {
         let text = textView.string.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return NSSound.beep() }
@@ -203,6 +239,9 @@ final class CommentThreadView: NSView {
 
     /// (text, pending): pending = part of the review in progress.
     var onReply: ((String, Bool) -> Void)?
+    /// Reply, then send the thread to your agent (⌘⇧↩); nil = no agent to send to.
+    var onReplyAndSend: ((String) -> Void)?
+    var sendAgent: String? { didSet { replyInput?.setSend(sendAgent) } }
     /// A review is in progress: new replies default to joining it.
     var inReview = false
     var onStartReply: (() -> Void)?
@@ -282,6 +321,8 @@ final class CommentThreadView: NSView {
                 input.onSubmit = { [weak self] text in self?.onReply?(text, self?.inReview ?? false) }
                 input.onSecondary = { [weak self] text in self?.onReply?(text, !(self?.inReview ?? false)) }
                 input.onCancel = { [weak self] in self?.onCancelReply?() }
+                input.setSend(sendAgent)
+                input.onSend = { [weak self] text in self?.onReplyAndSend?(text) }
                 addSubview(input)
                 replyInput = input
             }
