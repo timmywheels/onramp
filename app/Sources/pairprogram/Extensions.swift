@@ -15,6 +15,11 @@ enum Extensions {
 
     /// A file shipped in the app's resource bundle, if present.
     static func resource(_ name: String) -> URL? {
+        // In PairProgram.app the resources sit in Contents/Resources (see scripts/package.sh).
+        if Bundle.main.bundleIdentifier != nil, let url = Bundle.main.resourceURL?.appendingPathComponent(name),
+           FileManager.default.fileExists(atPath: url.path) {
+            return url
+        }
         guard let exe = Bundle.main.executableURL?.resolvingSymlinksInPath() else { return nil }
         let bundle = exe.deletingLastPathComponent().appendingPathComponent("pairprogram_pairprogram.bundle")
         let root = Bundle(url: bundle)?.resourceURL ?? bundle

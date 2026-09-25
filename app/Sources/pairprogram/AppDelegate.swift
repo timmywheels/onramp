@@ -4,10 +4,11 @@ import AppKit
 /// go to the front tab's ProjectWindowController.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private let initialRepo: String
+    private var initialRepo: String?
     private var controllers: [ProjectWindowController] = []
 
-    init(repoPath: String) {
+    /// nil: opened from Finder / the Dock without a repo.
+    init(repoPath: String?) {
         self.initialRepo = repoPath
     }
 
@@ -25,12 +26,66 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The Dock / ⌘-Tab icon (the binary isn't inside a .app, so set it here).
         if let icon = Extensions.resource("AppIcon.icns").flatMap(NSImage.init(contentsOf:)) { NSApp.applicationIconImage = icon }
         Style.shared.start()
-        let c = makeController(repoPath: initialRepo, first: true)
-        c.window?.makeKeyAndOrderFront(nil)
+        Installation.syncIntegrations()
+        // `pair <repo>` while we're running: open it as a tab.
+        DistributedNotificationCenter.default().addObserver(self, selector: #selector(openFromCLI(_:)), name: CLI.openNotification, object: nil)
         // Self-tests run while you keep typing elsewhere: never steal focus.
         if ProcessInfo.processInfo.environment["PP_SELFTEST"] == nil { NSApp.activate(ignoringOtherApps: true) }
+        guard let repo = initialRepo ?? RecentProjects.list.first(where: { RecentProjects.repoRoot(of: $0) != nil }) else {
+            return chooseFirstProject()
+        }
+        initialRepo = repo
+        let c = makeController(repoPath: repo, first: true)
+        c.window?.makeKeyAndOrderFront(nil)
         c.start()
     }
+
+    /// No repo and nothing recent: ask for one.
+    private func chooseFirstProject() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.prompt = "Review"
+        panel.message = "Choose a git repository to review (or any folder inside one)"
+        guard panel.runModal() == .OK, let url = panel.url, let root = RecentProjects.repoRoot(of: url.path) else {
+            if controllers.isEmpty { NSApp.terminate(nil) }
+            return
+        }
+        open(tabFor: root)
+    }
+
+    /// A tab for `repo`: the first window if there's none yet.
+    private func open(tabFor repo: String) {
+        if controllers.isEmpty {
+            initialRepo = repo
+            let c = makeController(repoPath: repo, first: true)
+            c.window?.makeKeyAndOrderFront(nil)
+            c.start()
+        } else if let existing = controllers.first(where: { $0.repoPath == repo }) {
+            existing.window?.tabGroup?.selectedWindow = existing.window
+            existing.window?.makeKeyAndOrderFront(nil)
+        } else {
+            openTab(repo: repo)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func openFromCLI(_ note: Notification) {
+        guard let repo = note.object as? String else { return }
+        open(tabFor: repo)
+    }
+
+    /// Folders dropped on the Dock icon (or "Open With").
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls { if let root = RecentProjects.repoRoot(of: url.path) { open(tabFor: root) } }
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if controllers.isEmpty { chooseFirstProject() }
+        return true
+    }
+
+    @objc func installCommandLineTool(_ sender: Any?) { Installation.installCommandLineTool() }
 
     private func makeController(repoPath: String, first: Bool = false) -> ProjectWindowController {
         let c = ProjectWindowController(repoPath: repoPath, first: first)
@@ -42,7 +97,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: Tabs
 
     /// ⌘T and the tab bar's "+": another tab on the same project; switch it from its toolbar.
-    @objc func newWindowForTab(_ sender: Any?) { openTab(repo: front?.repoPath ?? initialRepo) }
+    @objc func newWindowForTab(_ sender: Any?) {
+        guard let repo = front?.repoPath ?? initialRepo else { return chooseFirstProject() }
+        openTab(repo: repo)
+    }
 
     @discardableResult
     func openTab(repo: String, start: Bool = true) -> ProjectWindowController {
@@ -167,6 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings(_:)), keyEquivalent: ",")
+        appMenu.addItem(withTitle: "Install Command Line Tool…", action: #selector(installCommandLineTool(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Open Themes Folder", action: #selector(openThemes(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Open Extensions Folder", action: #selector(openExtensions(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())

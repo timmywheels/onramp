@@ -4,3 +4,4 @@ app/.swiftpm/
 app/Frameworks/
 app/Sources/pairprogram/Generated/
 .DS_Store
+dist/

@@ -1,4 +1,4 @@
-import Foundation
+import AppKit
 
 /// `pair <command>`: how agents (any agent) read and answer review
 /// comments. Returns nil when the arguments mean "open the app".
@@ -101,23 +101,56 @@ enum CLI {
     4. When done, run `pair comments` again to confirm nothing is left open.
     """
 
-    enum Open { case run(repo: String), exit(Int32) }
+    /// `repo` nil: opened from Finder / the Dock with no repo (reopen the last one).
+    enum Open { case run(repo: String?), exit(Int32) }
+
+    static let bundleID = "com.timwheeler.pairprogram"
+    static let openNotification = Notification.Name("com.timwheeler.pairprogram.open")
+
+    /// The PairProgram.app this binary lives in (also when run through the `pair` symlink).
+    static var appBundle: URL? {
+        let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
+        guard let r = exe.range(of: ".app/Contents/MacOS/") else { return nil }
+        return URL(fileURLWithPath: String(exe[..<r.lowerBound]) + ".app")
+    }
 
     /// `pairprogram [path]`: find the repo, then (from a terminal) relaunch the
     /// app detached and return, like `code .`.
     static func prepareOpen(_ argv: [String]) -> Open {
         let wait = argv.contains("--wait")
-        let path = argv.first { !$0.hasPrefix("-") && $0 != "YES" && $0 != "NO" } ?? FileManager.default.currentDirectoryPath
+        let given = argv.first { !$0.hasPrefix("-") && $0 != "YES" && $0 != "NO" }
+        let env = ProcessInfo.processInfo.environment
+        // Double-clicked / Dock: no path, and not started from a terminal inside a repo.
+        let fromFinder = given == nil && (argv.contains { $0.hasPrefix("-psn") } || FileManager.default.currentDirectoryPath == "/" || env["PP_DETACHED"] != nil)
+        let path = given ?? FileManager.default.currentDirectoryPath
         let root: String
         do { root = try repoRoot(URL(fileURLWithPath: path).standardizedFileURL.path) } catch {
+            if fromFinder || (given == nil && appBundle != nil && env["TERM"] == nil) { return .run(repo: nil) }
             FileHandle.standardError.write("pair: not inside a git repository: \(path)\n".data(using: .utf8)!)
             return .exit(1)
         }
-        let env = ProcessInfo.processInfo.environment
+        // Already running (the installed app): hand it the repo; it opens a tab.
+        if env["PP_SELFTEST"] == nil, env["PP_DETACHED"] == nil,
+           NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).contains(where: { $0.processIdentifier != getpid() }) {
+            DistributedNotificationCenter.default().postNotificationName(openNotification, object: root, userInfo: nil, deliverImmediately: true)
+            print("Opened \((root as NSString).lastPathComponent) in PairProgram")
+            return .exit(0)
+        }
         // Always detach (terminals, Claude Code's `!`, scripts), unless asked to wait.
         guard !wait, env["PP_DETACHED"] == nil, env["PP_SELFTEST"] == nil else { return .run(repo: root) }
 
-        // Relaunch detached (own session, no terminal I/O) and return.
+        // The installed app: launch it through Launch Services (a real app launch, Dock and all).
+        if let app = appBundle, env["PP_SELFTEST"] == nil {
+            let open = Process()
+            open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            open.arguments = ["-a", app.path, "--args", root]
+            if (try? open.run()) != nil {
+                open.waitUntilExit()
+                print("Opening PairProgram for \((root as NSString).lastPathComponent)")
+                return .exit(0)
+            }
+        }
+        // A development build: relaunch detached (own session, no terminal I/O) and return.
         let exe = Bundle.main.executablePath ?? CommandLine.arguments[0]
         let passthrough = argv.filter { $0.hasPrefix("-") && $0 != "--wait" }
         let args: [String] = [exe, root] + passthrough

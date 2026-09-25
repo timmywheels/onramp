@@ -3,7 +3,7 @@ import AppKit
 // pairprogram [repo-path] opens the app; `pairprogram comments|reply|resolve|…` is the agent CLI.
 if let status = CLI.run(Array(CommandLine.arguments.dropFirst())) { exit(status) }
 
-let repoPath: String
+let repoPath: String?
 switch CLI.prepareOpen(Array(CommandLine.arguments.dropFirst())) {
 case let .exit(status): exit(status)
 case let .run(repo): repoPath = repo
