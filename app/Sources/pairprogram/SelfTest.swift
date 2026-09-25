@@ -97,6 +97,16 @@ enum SelfTest {
                     let f = w.frame
                     log("window \(Int(f.minX)),\(Int(screen.frame.height - f.maxY)),\(Int(f.width)),\(Int(f.height)) id \(w.windowNumber)")
                 }
+                if ProcessInfo.processInfo.environment["PP_TYPE"] != nil, let e = doc.activateEditor(1, offset: doc.files[1].lineStarts[min(17, doc.files[1].lineCount - 1)]) {
+                    e.textView.insertText("const greeting = \"typed in the editor\"; // re-highlighted\n", replacementRange: e.textView.selectedRange())
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    var info = ""
+                    e.textView.layout.enumerateTextLayoutFragments(from: e.textView.layout.documentRange.location, options: [.ensuresLayout]) { f in
+                        info = "fragment.minX \(f.layoutFragmentFrame.minX) line.minX \(f.textLineFragments.first?.typographicBounds.minX ?? -1)"
+                        return false
+                    }
+                    log("editor: host.x \(e.host.frame.minX) textView.x \(e.textView.frame.minX) padding \(e.textView.textContainer!.lineFragmentPadding) inset \(e.textView.textContainerInset.width) \(info) · canvas textX \(DiffStyle.gutterWidth + 5)")
+                }
                 log("ready")
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 let popover = ProcessInfo.processInfo.environment["PP_POPOVER"]

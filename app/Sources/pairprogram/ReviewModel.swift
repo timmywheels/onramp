@@ -105,6 +105,68 @@ final class ReviewFile {
 
     /// Rendered text lines for the canvas, by row key. Dropped when the text changes.
     var lineCache: [Int: CTLine] = [:]
+
+    // MARK: Syntax
+
+    /// Colors for the current text and for the base version (deleted lines),
+    /// computed in the background the first time the file is drawn.
+    private(set) var syntax: SyntaxSpans?
+    private(set) var oldSyntax: SyntaxSpans?
+    private var syntaxRequested = false
+    private var textVersion = 0
+    private lazy var oldLineStarts: [Int] = Self.lineStarts(of: oldText as NSString)
+
+    /// Start highlighting (once); `done` runs when colors arrive.
+    /// PP_NO_SYNTAX=1 turns highlighting off (for measuring its cost).
+    static let syntaxOff = ProcessInfo.processInfo.environment["PP_NO_SYNTAX"] != nil
+
+    @MainActor func requestSyntax(_ done: @escaping @MainActor () -> Void) {
+        guard !syntaxRequested, kind == .text, !Self.syntaxOff else { return }
+        syntaxRequested = true
+        let version = textVersion
+        let needsOld = oldSyntax == nil && hunks.contains { !$0.deleted.isEmpty }
+        Syntax.highlight(path: path, text: newText as String, onlyIfOnScreen: true) { [weak self] result in
+            guard let self, self.textVersion == version else { return }
+            switch result {
+            case .skipped: self.syntaxRequested = false // scrolled past; ask again when it's back
+            case .noLanguage: break
+            case let .spans(spans):
+                self.syntax = spans
+                self.lineCache = [:]
+                done()
+            }
+        }
+        if needsOld {
+            Syntax.highlight(path: path, text: oldText, onlyIfOnScreen: true) { [weak self] result in
+                guard let self, case let .spans(spans) = result else { return }
+                self.oldSyntax = spans
+                self.lineCache = [:]
+                done()
+            }
+        }
+    }
+
+    /// Colors computed elsewhere (the open editor) for exactly this text.
+    func adoptSyntax(_ spans: SyntaxSpans, for text: String) {
+        guard text == newText as String else { return }
+        syntax = spans
+        syntaxRequested = true
+        lineCache = [:]
+    }
+
+    /// Line `i`, colored when highlighting is ready.
+    func attributedLine(_ i: Int, attrs: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        let text = line(i)
+        return syntax?.attributed(text, at: lineStarts[i], attrs: attrs) ?? NSAttributedString(string: text, attributes: attrs)
+    }
+
+    /// Deleted line `k` of hunk `h`, colored like the base version of the file.
+    func attributedDeleted(_ h: Int, _ k: Int, attrs: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        let text = hunks[h].deleted[k]
+        let old = Int(hunks[h].oldStart) + k
+        guard let oldSyntax, old < oldLineStarts.count else { return NSAttributedString(string: text, attributes: attrs) }
+        return oldSyntax.attributed(text, at: oldLineStarts[old], attrs: attrs)
+    }
     private var cachedLayout: FileLayout?
 
     init(_ diff: FileDiff) {
@@ -137,11 +199,15 @@ final class ReviewFile {
         lineStarts = Self.lineStarts(of: newText)
         lineCache = [:]
         cachedLayout = nil
+        textVersion += 1 // colors for the old text no longer line up
+        syntax = nil
+        syntaxRequested = false
     }
 
     /// Font changed: row heights and rendered lines are stale.
     func invalidateLayout() {
         cachedLayout = nil
+        lineCache = [:] // colors and font are baked into rendered lines
         lineCache = [:]
     }
 

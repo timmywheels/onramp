@@ -50,8 +50,11 @@ final class ReviewCanvasView: NSView {
         let width = bounds.width
 
         var i = doc.index(at: top + dirtyRect.minY)
+        var onScreen = Set<String>()
+        defer { Syntax.setOnScreen(onScreen) }
         while i < doc.files.count, doc.tops[i] < top + dirtyRect.maxY {
             let file = doc.files[i]
+            onScreen.insert(file.path)
             let layout = file.layout
             let fileY = doc.tops[i] - top
             let hasEditor = doc.hasEditor(i)
@@ -79,10 +82,12 @@ final class ReviewCanvasView: NSView {
         case let .line(i, added):
             if added { fill(DiffStyle.addedBackground, CGRect(x: 0, y: y, width: width, height: row.height), ctx) }
             drawNumber(i + 1, y: y, in: ctx)
-            draw(cachedLine(row, file) { NSAttributedString(string: file.line(i), attributes: Self.textAttrs) }, x: textX, y: y, in: ctx)
+            file.requestSyntax { [weak self] in self?.needsDisplay = true }
+            draw(cachedLine(row, file) { file.attributedLine(i, attrs: Self.textAttrs) }, x: textX, y: y, in: ctx)
         case let .deleted(h, k):
             fill(DiffStyle.deletedBackground, CGRect(x: 0, y: y, width: width, height: row.height), ctx)
-            draw(cachedLine(row, file) { NSAttributedString(string: file.hunks[h].deleted[k], attributes: Self.deletedAttrs) }, x: textX, y: y, in: ctx)
+            file.requestSyntax { [weak self] in self?.needsDisplay = true }
+            draw(cachedLine(row, file) { file.attributedDeleted(h, k, attrs: Self.deletedAttrs) }, x: textX, y: y, in: ctx)
         case let .fold(start, end):
             let count = end - start
             fill(DiffStyle.foldBackground, CGRect(x: 0, y: y + 3, width: width, height: row.height - 6), ctx)

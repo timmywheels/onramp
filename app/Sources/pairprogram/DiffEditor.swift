@@ -42,6 +42,9 @@ enum DiffStyle {
     nonisolated(unsafe) static var commentBorder = NSColor.separatorColor
     nonisolated(unsafe) static var accent = NSColor.controlAccentColor
     nonisolated(unsafe) static var isDark = true
+    /// Resolved color per highlight kind (index into `Syntax.names`); nil = plain text.
+    nonisolated(unsafe) static var syntaxColors: [NSColor?] = []
+    static func syntaxColor(_ kind: Int) -> NSColor? { kind < syntaxColors.count ? syntaxColors[kind] : nil }
 
     @MainActor static func apply(theme: Theme, font newFont: NSFont, headerFont newHeaderFont: NSFont) {
         font = newFont
@@ -69,6 +72,7 @@ enum DiffStyle {
         commentBackground = theme.color("comment_background")
         commentBorder = theme.color("comment_border")
         accent = theme.color("accent")
+        syntaxColors = Syntax.names.map { theme.syntaxColor($0) }
         lineNumberAttrs = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: max(9, size - 1.5), weight: .regular),
             .foregroundColor: lineNumber,
@@ -102,6 +106,8 @@ final class Band: NSObject {
     var foldAbove = 0           // hidden unchanged lines before this line
     var deletedAbove: [String] = []
     var deletedBelow: [String] = [] // deletions at end of file
+    var deletedAboveOld = 0     // base-version line of deletedAbove[0] (for syntax colors)
+    var deletedBelowOld = 0
     var foldBelow = 0           // hidden unchanged lines after the last visible line
     var commentsBelow: CGFloat = 0 // comment boxes under this line (drawn by overlay views)
     var commentsAfterDeletedAbove: CGFloat = 0 // comment boxes under the red block above this line
@@ -153,10 +159,10 @@ final class DiffLayoutFragment: NSTextLayoutFragment {
                 drawFold(count: band.foldAbove, y: y, point: point, textX: textX, left: lineLeft, in: context)
                 y += DiffStyle.foldHeight
             }
-            drawDeleted(band.deletedAbove, y: y, point: point, textX: textX, left: lineLeft, in: context)
+            drawDeleted(band.deletedAbove, oldLine: band.deletedAboveOld, y: y, point: point, textX: textX, left: lineLeft, in: context)
 
             y = point.y + textBottom + band.commentsBelow
-            drawDeleted(band.deletedBelow, y: y, point: point, textX: textX, left: lineLeft, in: context)
+            drawDeleted(band.deletedBelow, oldLine: band.deletedBelowOld, y: y, point: point, textX: textX, left: lineLeft, in: context)
             y += CGFloat(band.deletedBelow.count) * DiffStyle.lineHeight + band.commentsAfterDeletedBelow
             if band.foldBelow > 0 {
                 drawFold(count: band.foldBelow, y: y, point: point, textX: textX, left: lineLeft, in: context)
@@ -178,13 +184,13 @@ final class DiffLayoutFragment: NSTextLayoutFragment {
                                y: point.y + textTop + (lineHeight - size.height) / 2))
     }
 
-    private func drawDeleted(_ lines: [String], y: CGFloat, point: CGPoint, textX: CGFloat, left: CGFloat, in context: CGContext) {
+    private func drawDeleted(_ lines: [String], oldLine: Int, y: CGFloat, point: CGPoint, textX: CGFloat, left: CGFloat, in context: CGContext) {
         guard !lines.isEmpty else { return }
         context.setFillColor(DiffStyle.deletedBackground.cgColor)
         context.fill(CGRect(x: left, y: y, width: fullWidth, height: CGFloat(lines.count) * DiffStyle.lineHeight))
         let attrs: [NSAttributedString.Key: Any] = [.font: DiffStyle.font, .foregroundColor: DiffStyle.deletedText]
         for (i, line) in lines.enumerated() {
-            NSAttributedString(string: line, attributes: attrs)
+            (editor?.deletedLine(line, oldLine: oldLine + i, attrs: attrs) ?? NSAttributedString(string: line, attributes: attrs))
                 .draw(at: CGPoint(x: point.x + textX, y: y + CGFloat(i) * DiffStyle.lineHeight))
         }
     }
@@ -338,9 +344,16 @@ final class EditorHost: NSView {
 
     override func layout() {
         super.layout()
-        // NSTextView renders glyphs at the fragment's origin, not after the container's
-        // 5pt line padding the canvas uses; shift it so text doesn't move on click-to-edit.
-        let x = DiffStyle.gutterWidth + textView.textContainer!.lineFragmentPadding
+        // Glyphs must land where the canvas draws them (gutter + 5pt), or text
+        // jumps sideways on click-to-edit. Where TextKit puts a line's first
+        // glyph inside the text view (fragment origin + line offset) has varied,
+        // so measure it instead of assuming.
+        var inset = textView.textContainer!.lineFragmentPadding
+        textView.layout.enumerateTextLayoutFragments(from: textView.layout.documentRange.location, options: []) { f in
+            inset = f.layoutFragmentFrame.minX + (f.textLineFragments.first?.typographicBounds.minX ?? 0)
+            return false
+        }
+        let x = DiffStyle.gutterWidth + 5 - inset
         textView.fixedWidth = max(0, bounds.width - x)
         textView.frame = NSRect(x: x, y: 0, width: textView.fixedWidth, height: textView.fixedHeight)
     }
@@ -365,6 +378,8 @@ final class EditorHost: NSView {
 @MainActor
 protocol DiffEditorDelegate: AnyObject {
     func diffEditorDidChange(_ editor: DiffEditor)
+    /// Fresh syntax colors for the editor's current text (so the canvas can reuse them).
+    func diffEditorDidHighlight(_ editor: DiffEditor, spans: SyntaxSpans, text: String)
 }
 
 /// What one line should look like. Compared against what the text storage
@@ -383,6 +398,16 @@ final class DiffEditor: NSObject, NSTextViewDelegate {
     weak var delegate: DiffEditorDelegate?
 
     private let oldText: String
+    private let path: String
+
+    // Syntax colors live in the text storage as foreground colors. After an
+    // edit the file is re-highlighted in the background and only the region
+    // whose colors changed is rewritten (usually a line or two).
+    private var syntax: SyntaxSpans?
+    private let oldSyntax: SyntaxSpans?
+    private let oldLineStarts: [Int]
+    private var editVersion = 0
+    private var highlightedLength = 0
     private let layoutDelegate = DiffLayoutDelegate()
     private(set) var hunks: [DiffHunk] = []
     private(set) var isDirty = false
@@ -411,7 +436,12 @@ final class DiffEditor: NSObject, NSTextViewDelegate {
         refresh(hunks: hunks)
     }
 
-    init(oldText: String, newText: String, hunks: [DiffHunk], expanded: [Range<Int>] = []) {
+    init(path: String, oldText: String, newText: String, hunks: [DiffHunk], expanded: [Range<Int>] = [],
+         syntax: SyntaxSpans? = nil, oldSyntax: SyntaxSpans? = nil) {
+        self.path = path
+        self.syntax = syntax
+        self.oldSyntax = oldSyntax
+        self.oldLineStarts = oldSyntax == nil ? [] : ReviewFile.lineStarts(of: oldText as NSString)
         self.oldText = oldText
         self.hunks = hunks
         self.expanded = expanded
@@ -457,6 +487,9 @@ final class DiffEditor: NSObject, NSTextViewDelegate {
         computeLineStarts(s)
         let looks = desiredLooks()
         writeLooks(looks, changed: Array(looks.indices), into: text, length: text.length)
+        if let syntax { color(text, with: syntax, in: NSRange(location: 0, length: text.length)) }
+        highlightedLength = text.length
+        if syntax == nil { scheduleHighlight(delay: 0) }
         textView.folding.hiddenRanges = hiddenRanges(looks, length: text.length)
         textView.folding.performEditingTransaction {
             storage.setAttributedString(text)
@@ -477,6 +510,9 @@ final class DiffEditor: NSObject, NSTextViewDelegate {
             }
         }
         refresh(hunks: hunks, forceRestyle: true)
+        if let syntax, let storage = textView.folding.textStorage {
+            textView.folding.performEditingTransaction { color(storage, with: syntax, in: NSRange(location: 0, length: storage.length)) }
+        }
         textView.redisplayVisibleFragments()
     }
 
@@ -553,7 +589,13 @@ final class DiffEditor: NSObject, NSTextViewDelegate {
             for i in s..<min(s + n, lineCount) { looks[i].added = true }
             guard !h.deleted.isEmpty else { continue }
             if s == 0 { continue } // drawn by the canvas above the editor (see FileLayout.editorTop)
-            if s < lineCount { band(s).deletedAbove = h.deleted } else { band(lineCount - 1).deletedBelow = h.deleted }
+            if s < lineCount {
+                band(s).deletedAbove = h.deleted
+                band(s).deletedAboveOld = Int(h.oldStart)
+            } else {
+                band(lineCount - 1).deletedBelow = h.deleted
+                band(lineCount - 1).deletedBelowOld = Int(h.oldStart)
+            }
         }
 
         // Fold markers go on the first visible line after a hidden run (or the last visible line for a trailing run).
@@ -669,10 +711,78 @@ final class DiffEditor: NSObject, NSTextViewDelegate {
         return lo
     }
 
+    // MARK: Syntax
+
+    /// A deleted line colored like the base version of the file.
+    nonisolated func deletedLine(_ text: String, oldLine: Int, attrs: [NSAttributedString.Key: Any]) -> NSAttributedString? {
+        guard let oldSyntax, oldLine < oldLineStarts.count else { return nil }
+        return oldSyntax.attributed(text, at: oldLineStarts[oldLine], attrs: attrs)
+    }
+
+    /// Set foreground colors in `range` of `target` from `spans` (plain text color elsewhere).
+    private func color(_ target: NSMutableAttributedString, with spans: SyntaxSpans, in range: NSRange) {
+        guard range.length > 0 else { return }
+        target.addAttribute(.foregroundColor, value: DiffStyle.text, range: range)
+        spans.forEach(inLineAt: range.location, length: range.length) { r, color in
+            target.addAttribute(.foregroundColor, value: color, range: NSRange(location: range.location + r.location, length: r.length))
+        }
+    }
+
+    private func scheduleHighlight(delay: TimeInterval) {
+        let version = editVersion
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.editVersion == version else { return } // still typing: the next one will run
+            let text = self.text
+            Syntax.highlight(path: self.path, text: text) { [weak self] result in
+                guard let self, case let .spans(spans) = result, self.editVersion == version else { return }
+                self.applyHighlight(spans, length: (text as NSString).length)
+                self.delegate?.diffEditorDidHighlight(self, spans: spans, text: text)
+            }
+        }
+    }
+
+    /// Rewrite colors only where the new spans differ from the old ones.
+    private func applyHighlight(_ new: SyntaxSpans, length: Int) {
+        guard let storage = textView.folding.textStorage, storage.length == length else { return }
+        let range = syntax.map { Self.changedRange(old: $0.spans, new: new.spans, delta: length - highlightedLength, length: length) }
+            ?? NSRange(location: 0, length: length)
+        syntax = new
+        highlightedLength = length
+        guard let range, range.length > 0 else { return }
+        textView.folding.performEditingTransaction {
+            storage.beginEditing()
+            color(storage, with: new, in: range)
+            storage.endEditing()
+        }
+    }
+
+    /// The UTF-16 range whose colors differ between two highlights of a text
+    /// that grew by `delta` in one place: skip equal spans from the front, and
+    /// from the back (shifted by `delta`); what's left changed.
+    static func changedRange(old: [UInt32], new: [UInt32], delta: Int, length: Int) -> NSRange? {
+        let on = old.count / 3, nn = new.count / 3
+        var p = 0
+        while p < on, p < nn, old[p * 3] == new[p * 3], old[p * 3 + 1] == new[p * 3 + 1], old[p * 3 + 2] == new[p * 3 + 2] { p += 1 }
+        if p == on, p == nn { return nil }
+        var s = 0
+        while s < on - p, s < nn - p {
+            let o = (on - 1 - s) * 3, n = (nn - 1 - s) * 3
+            guard Int(old[o]) + delta == Int(new[n]), Int(old[o + 1]) + delta == Int(new[n + 1]), old[o + 2] == new[n + 2] else { break }
+            s += 1
+        }
+        var lo = Int.max, hi = 0
+        if p < on - s { lo = min(lo, Int(old[p * 3])); hi = max(hi, Int(old[(on - s - 1) * 3 + 1]) + delta) }
+        if p < nn - s { lo = min(lo, Int(new[p * 3])); hi = max(hi, Int(new[(nn - s - 1) * 3 + 1])) }
+        lo = max(0, min(lo, length)); hi = max(lo, min(hi, length))
+        return NSRange(location: lo, length: hi - lo)
+    }
+
     // MARK: Editing
 
     func textDidChange(_ notification: Notification) {
         isDirty = true
+        editVersion += 1
+        scheduleHighlight(delay: 0.03)
         // Coalesce bursts (paste, multi-cursor) into one refresh per runloop turn.
         guard !refreshScheduled else { return }
         refreshScheduled = true

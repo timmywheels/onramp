@@ -69,7 +69,9 @@ final class Style {
             if let s = try? decoder.decode(Settings.self, from: data) { settings = s }
         }
         var all = Theme.builtIn
-        for t in Extensions.load() {
+        let extensionThemes = Extensions.load()
+        setLanguages(configs: Extensions.loaded.flatMap(\.languages))
+        for t in extensionThemes {
             all.removeAll { $0.name == t.name }
             all.append(t)
         }

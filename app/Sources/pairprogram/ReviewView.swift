@@ -541,7 +541,8 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
             }
         }
         let editor = editors[i] ?? {
-            let e = DiffEditor(oldText: file.oldText, newText: file.newText as String, hunks: file.hunks, expanded: file.revealed)
+            let e = DiffEditor(path: file.path, oldText: file.oldText, newText: file.newText as String, hunks: file.hunks,
+                               expanded: file.revealed, syntax: file.syntax, oldSyntax: file.oldSyntax)
             mark("init")
             e.setReveal(expanded: file.revealed, commentSpace: file.commentSpace, deletedCommentSpace: file.deletedCommentSpace)
             mark("reveal")
@@ -577,6 +578,11 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
             editors[i] = nil
             canvas.needsDisplay = true
         }
+    }
+
+    func diffEditorDidHighlight(_ editor: DiffEditor, spans: SyntaxSpans, text: String) {
+        guard let i = editors.first(where: { $0.value === editor })?.key else { return }
+        files[i].adoptSyntax(spans, for: text)
     }
 
     func diffEditorDidChange(_ editor: DiffEditor) {

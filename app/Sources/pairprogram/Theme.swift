@@ -12,6 +12,10 @@ struct Theme: Codable {
     var name: String
     var appearance: String // "light" | "dark"
     var colors: [String: String]
+    /// Syntax colors by tree-sitter capture name ("keyword", "string",
+    /// "function.method", ...). A name falls back to its parent ("function"),
+    /// then to the built-in theme of the same appearance.
+    var syntax: [String: String]? = nil
 
     var isDark: Bool { appearance == "dark" }
 
@@ -42,6 +46,17 @@ struct Theme: Codable {
         return NSColor(hex: fallback.colors[key] ?? "#ff00ff") ?? .magenta
     }
 
+    /// Color for a capture name, or nil to draw it as plain text.
+    func syntaxColor(_ name: String) -> NSColor? {
+        var n = Substring(name)
+        let fallback = isDark ? Theme.dark : Theme.light
+        while true {
+            if let hex = syntax?[String(n)] ?? fallback.syntax?[String(n)] { return NSColor(hex: hex) }
+            guard let dot = n.lastIndex(of: ".") else { return nil }
+            n = n[..<dot]
+        }
+    }
+
     // MARK: Built-ins
 
     static let dark = Theme(name: "pairprogram Dark", appearance: "dark", colors: [
@@ -51,6 +66,13 @@ struct Theme: Codable {
         "header_background": "#262626", "header_text": "#e6e6e6", "separator": "#ffffff1a",
         "caret": "#4c9aff", "current_line": "#ffffff0a", "hover": "#ffffff09",
         "comment_background": "#262a31", "comment_border": "#3d4452", "accent": "#4c9aff",
+    ], syntax: [ // One Dark
+        "keyword": "#c678dd", "string": "#98c379", "string.special": "#56b6c2", "escape": "#56b6c2",
+        "comment": "#7f848e", "number": "#d19a66", "boolean": "#d19a66", "constant": "#d19a66",
+        "function": "#61afef", "function.builtin": "#56b6c2", "constructor": "#e5c07b",
+        "type": "#e5c07b", "module": "#e5c07b", "property": "#e06c75", "variable.builtin": "#e06c75",
+        "tag": "#e06c75", "attribute": "#d19a66", "label": "#e06c75", "operator": "#56b6c2",
+        "punctuation.special": "#56b6c2",
     ])
 
     static let light = Theme(name: "pairprogram Light", appearance: "light", colors: [
@@ -60,6 +82,13 @@ struct Theme: Codable {
         "header_background": "#f6f8fa", "header_text": "#1f2328", "separator": "#d0d7de",
         "caret": "#0969da", "current_line": "#0000000a", "hover": "#0000000a",
         "comment_background": "#f6f8fa", "comment_border": "#d0d7de", "accent": "#0969da",
+    ], syntax: [ // One Light
+        "keyword": "#a626a4", "string": "#50a14f", "string.special": "#0184bc", "escape": "#0184bc",
+        "comment": "#a0a1a7", "number": "#986801", "boolean": "#986801", "constant": "#986801",
+        "function": "#4078f2", "function.builtin": "#0184bc", "constructor": "#c18401",
+        "type": "#c18401", "module": "#c18401", "property": "#e45649", "variable.builtin": "#e45649",
+        "tag": "#e45649", "attribute": "#986801", "label": "#e45649", "operator": "#0184bc",
+        "punctuation.special": "#0184bc",
     ])
 
     /// The fallbacks every theme builds on. More themes come from extensions.
