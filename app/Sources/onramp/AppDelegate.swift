@@ -5,6 +5,9 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var initialRepo: String?
+    private var didLaunch = false
+    /// Links that arrived while launching (e.g. Stoplight opened us): handled once the app is up.
+    private var pendingLinks: [URL] = []
     private var controllers: [ProjectWindowController] = []
 
     /// nil: opened from Finder / the Dock without a repo.
@@ -22,16 +25,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        didLaunch = true
         NSApp.mainMenu = makeMainMenu()
         // The Dock / ⌘-Tab icon (the binary isn't inside a .app, so set it here).
         if let icon = Extensions.resource("AppIcon.icns").flatMap(NSImage.init(contentsOf:)) { NSApp.applicationIconImage = icon }
         Style.shared.start()
         Installation.syncIntegrations()
         Updater.shared.start()
+        MenuBarItem.shared.start()
+        if ProcessInfo.processInfo.environment["ONRAMP_SELFTEST"] == "link-cold" { // launched by a link, nothing recent
+            FileHandle.standardError.write("[selftest] didFinishLaunching: \(controllers.count) tabs\n".data(using: .utf8)!)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) { [self] in
+                for c in controllers { FileHandle.standardError.write("[selftest] tab \(c.window?.title ?? "?") visible \(c.window?.isVisible ?? false)\n".data(using: .utf8)!) }
+                FileHandle.standardError.write("[selftest] done: \(controllers.count) tabs\n".data(using: .utf8)!)
+                NSApp.terminate(nil)
+            }
+        }
         // `onramp <repo>` while we're running: open it as a tab.
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(openFromCLI(_:)), name: CLI.openNotification, object: nil)
         // Self-tests run while you keep typing elsewhere: never steal focus.
         if ProcessInfo.processInfo.environment["ONRAMP_SELFTEST"] == nil { NSApp.activate(ignoringOtherApps: true) }
+        // Opened by a link: that's the first thing to show (the PR as a tab), not the last project.
+        if !pendingLinks.isEmpty {
+            let links = pendingLinks
+            pendingLinks = []
+            links.forEach(handleOpen)
+            if !controllers.isEmpty { return } // otherwise (you cancelled) start as usual
+        }
         guard let repo = initialRepo ?? RecentProjects.list.first(where: { RecentProjects.repoRoot(of: $0) != nil }) else {
             return chooseFirstProject()
         }
@@ -78,13 +98,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Folders dropped on the Dock icon ("Open With"), and onramp:// links (e.g. from Stoplight).
     func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls {
-            if url.scheme == "onramp" || url.scheme == "onramp" { DeepLinks.handle(url, app: self); continue }
-            if let root = RecentProjects.repoRoot(of: url.path) { open(tabFor: root) }
-        }
+        DeepLinks.log("open \(urls) (launched: \(didLaunch))")
+        guard didLaunch else { return pendingLinks += urls }
+        urls.forEach(handleOpen)
+    }
+
+    private func handleOpen(_ url: URL) {
+        if url.scheme == "onramp" { return DeepLinks.handle(url, app: self) }
+        if let root = RecentProjects.repoRoot(of: url.path) { open(tabFor: root) }
     }
 
     func openProject(_ root: String) { open(tabFor: root) }
+
+    /// Every open tab's review (the menu bar reads agent runs from these).
+    var openReviews: [ReviewView] { controllers.map(\.review) }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
         if controllers.isEmpty { chooseFirstProject() }
@@ -179,6 +206,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func toggleLigatures(_ sender: Any?) { Style.shared.update { $0.fontLigatures.toggle() } }
+    @objc func toggleMenuBar(_ sender: Any?) { Style.shared.update { $0.menuBar.toggle() } }
 
     @objc func zoomIn(_ sender: Any?) { Style.shared.update { $0.fontSize = min(32, $0.fontSize + 1) } }
     @objc func zoomOut(_ sender: Any?) { Style.shared.update { $0.fontSize = max(8, $0.fontSize - 1) } }
@@ -207,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         menu.item(withTitle: "Font Ligatures")?.state = style.settings.fontLigatures ? .on : .off
+        menu.item(withTitle: "Show Agents in Menu Bar")?.state = style.settings.menuBar ? .on : .off
         if let fonts = menu.item(withTitle: "Font")?.submenu {
             fonts.removeAllItems()
             for (i, family) in style.monospaceFamilies.enumerated() {
@@ -227,7 +256,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+    /// With the menu bar item on, Onramp keeps watching your agents after the last window closes.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { !MenuBarItem.shared.isShown }
 
     private func makeMainMenu() -> NSMenu {
         let main = NSMenu()
@@ -298,6 +328,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let comments = viewMenu.addItem(withTitle: "Show Right Panel", action: #selector(toggleComments(_:)), keyEquivalent: "0")
         comments.keyEquivalentModifierMask = [.option, .command]
         viewMenu.addItem(withTitle: "Show Resolved Comments", action: #selector(toggleResolved(_:)), keyEquivalent: "R")
+        viewMenu.addItem(withTitle: "Show Agents in Menu Bar", action: #selector(toggleMenuBar(_:)), keyEquivalent: "")
         viewMenu.addItem(.separator())
         let c1 = viewMenu.addItem(withTitle: "Comments", action: #selector(showComments(_:)), keyEquivalent: "1")
         c1.keyEquivalentModifierMask = [.option, .command]

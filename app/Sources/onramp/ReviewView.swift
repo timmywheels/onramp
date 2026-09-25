@@ -2,7 +2,7 @@ import AppKit
 
 /// The endless scroll: every changed file in one scroll view.
 final class ReviewView: NSView, NSPopoverDelegate {
-    private let repoPath: String
+    let repoPath: String
     let scrollView = NSScrollView()
     let document: ReviewDocumentView
     private let statusBar = StatusBarView()
@@ -547,6 +547,14 @@ final class ReviewView: NSView, NSPopoverDelegate {
 
     /// The Agent button. Most urgent state wins: working (blue, pulsing) →
     /// needs you (yellow) → a run that ended (✓/✗) → connected (green) → none (grey).
+    /// Review runs started from this tab that have ended: which agent, whether it succeeded, and when.
+    var finishedRuns: [(agent: String, ok: Bool, at: Date)] {
+        runners.values.compactMap { r in
+            guard case let .finished(target, ok) = r.state, let at = r.finishedAt else { return nil }
+            return (target.rawValue, ok, at)
+        }
+    }
+
     private func updateAgents() {
         let sessions = ConnectedAgents.sessions(repoRoot: repoPath)
         let live = Array(Set(sessions.map(\.agent))).sorted()
@@ -1267,7 +1275,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     // MARK: Comments
 
-    private static func gitUserName(_ repo: String) -> String? {
+    static func gitUserName(_ repo: String) -> String? {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         p.arguments = ["git", "-C", repo, "config", "user.name"]

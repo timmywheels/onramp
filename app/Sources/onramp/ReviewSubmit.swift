@@ -23,7 +23,14 @@ final class AgentRunner {
         case finished(Target, ok: Bool)
     }
 
-    private(set) var state: State = .idle { didSet { onChange?() } }
+    private(set) var state: State = .idle {
+        didSet {
+            if case .finished = state { finishedAt = .now }
+            onChange?()
+        }
+    }
+    /// When the last run ended (the menu bar shows "finished" for a while).
+    private(set) var finishedAt: Date?
     private(set) var logURL: URL?
     var onChange: (() -> Void)?
     private var process: Process?
