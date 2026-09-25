@@ -7,8 +7,8 @@
     {
       "name": "pairprogram",
       "source": "./plugin",
-      "description": "Review comments from the pairprogram app: /pairprogram:address-comments plus the pairprogram MCP server."
+      "description": "Review comments from the Onramp app: /pairprogram:address-comments plus the pairprogram MCP server."
     }
   ],
-  "description": "pairprogram: review your agent's changes in a native Mac app and hand the comments back."
+  "description": "Onramp: review your agent's changes in a native Mac app and hand the comments back."
 }

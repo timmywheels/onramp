@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Creates a PR-shaped playground repo for trying pairprogram without touching
+# Creates a PR-shaped playground repo for trying Onramp without touching
 # real work: an "origin" with main, a feature branch with several commits,
 # uncommitted edits, a new untracked file and a deleted one, in several
 # languages. Re-run any time to reset it (it's rebuilt from scratch).

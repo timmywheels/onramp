@@ -18,7 +18,7 @@ final class Updater {
 
     enum State: Equatable { case idle, checking, upToDate, available, downloading, installing, failed(String) }
 
-    static let repo = "timmywheels/pairprogram"
+    static let repo = "timmywheels/onramp"
     static let checkInterval: TimeInterval = 6 * 60 * 60
 
     private(set) var latest: Release?
@@ -94,8 +94,8 @@ final class Updater {
 
             state = .installing
             try run("/usr/bin/ditto", "-x", "-k", zip.path, tmp.path)
-            // Onramp.app (or Onramp.app, from before the rename).
-            guard let newApp = ["Onramp.app", "Onramp.app"].map({ tmp.appendingPathComponent($0) })
+            // Onramp.app (or PairProgram.app, from before the rename).
+            guard let newApp = ["Onramp.app", "PairProgram.app"].map({ tmp.appendingPathComponent($0) })
                 .first(where: { FileManager.default.fileExists(atPath: $0.path) }) else { throw Err.badArchive }
 
             // Refuse anything Gatekeeper wouldn't launch, and anything that isn't us.
