@@ -9,6 +9,7 @@ struct Settings: Codable, Equatable {
     var fontFamily = ""                    // "" = default (Lilex), "System Mono" = SF Mono, or any installed family
     var fontSize: Double = 12.5
     var fontLigatures = true               // coding ligatures like -> => != (fonts that have them)
+    var ghPath = ""                        // GitHub CLI; "" = find it (Homebrew, ~/.local/bin, your shell's PATH)
 
     static let defaultFontSize = 12.5
 
@@ -24,6 +25,7 @@ struct Settings: Codable, Equatable {
         fontFamily = try c.decodeIfPresent(String.self, forKey: .fontFamily) ?? d.fontFamily
         fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize) ?? d.fontSize
         fontLigatures = try c.decodeIfPresent(Bool.self, forKey: .fontLigatures) ?? d.fontLigatures
+        ghPath = try c.decodeIfPresent(String.self, forKey: .ghPath) ?? d.ghPath
     }
 }
 
@@ -178,6 +180,7 @@ final class Style {
     }
 
     private func apply() {
+        GitHub.configuredPath = settings.ghPath
         switch settings.appearance {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
         case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)

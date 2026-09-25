@@ -1,18 +1,23 @@
 import AppKit
 
+/// App-wide: menus, settings, and the project windows (tabs). Window actions
+/// go to the front tab's ProjectWindowController.
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
-    private var repoPath: String
-    private var window: NSWindow!
-    private var reviewView: ReviewView!
-    private var sidebar: FileTreeSidebar!
-    private var toolbar: SourceToolbar!
-    private var commentsPanel = CommentsPanel()
-    private var commentsItem: NSSplitViewItem?
-    private var contextWindow: ContextWindowController?
+    private let initialRepo: String
+    private var controllers: [ProjectWindowController] = []
 
     init(repoPath: String) {
-        self.repoPath = repoPath
+        self.initialRepo = repoPath
+    }
+
+    /// The front tab (or the last one opened).
+    var front: ProjectWindowController? {
+        if let c = NSApp.keyWindow?.windowController as? ProjectWindowController { return c }
+        if let c = NSApp.mainWindow?.windowController as? ProjectWindowController { return c }
+        // Not active (e.g. in the background): the selected tab of the window group.
+        let selected = controllers.first?.window?.tabGroup?.selectedWindow
+        return controllers.first { $0.window === selected } ?? controllers.last
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -20,149 +25,69 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The Dock / ⌘-Tab icon (the binary isn't inside a .app, so set it here).
         if let icon = Extensions.resource("AppIcon.icns").flatMap(NSImage.init(contentsOf:)) { NSApp.applicationIconImage = icon }
         Style.shared.start()
-
-        window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1100, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "pairprogram — \((repoPath as NSString).lastPathComponent)"
-        toolbar = SourceToolbar(repoPath: repoPath)
-        toolbar.onOpenRepo = { [weak self] path in self?.open(repo: path) }
-        toolbar.onToggleComments = { [weak self] in self?.toggleComments(nil) }
-        toolbar.onOpenContext = { [weak self] in self?.openContext(nil) }
-        toolbar.onOpenPullRequest = { [weak self] in self?.openPullRequest(nil) }
-        toolbar.setContextCount(ContextWindowController.enabledCount(repo: repoPath))
-        toolbar.install(in: window)
-        RecentProjects.add(repoPath)
-
-        reviewView = ReviewView(repoPath: repoPath)
-        toolbar.review = reviewView
-        reviewView.onBaseChanged = { [weak self] _ in self?.toolbar.refreshTitles() }
-        sidebar = FileTreeSidebar()
-        wireSidebar()
-        // A content view controller resizes the window to its fitting size (tiny, since
-        // the review has no intrinsic size), so size it after, then restore any saved frame.
-        window.contentViewController = makeSplit()
-        window.contentMinSize = NSSize(width: 700, height: 400)
-        window.setContentSize(NSSize(width: 1300, height: 850))
-        window.center()
-        window.setFrameAutosaveName("pairprogram.window")
-        window.makeKeyAndOrderFront(nil)
-        if UserDefaults.standard.object(forKey: "NSSplitView Subview Frames pairprogram.split") == nil,
-           let split = window.contentViewController as? NSSplitViewController {
-            split.splitView.setPosition(300, ofDividerAt: 0) // first launch; afterwards the saved width wins
-        }
+        let c = makeController(repoPath: initialRepo, first: true)
+        c.window?.makeKeyAndOrderFront(nil)
         // Self-tests run while you keep typing elsewhere: never steal focus.
         if ProcessInfo.processInfo.environment["PP_SELFTEST"] == nil { NSApp.activate(ignoringOtherApps: true) }
-
-        reviewView.reload()
+        c.start()
     }
 
-    /// Show another project or worktree in this window.
-    func open(repo path: String) {
-        guard path != repoPath else { return }
-        guard reviewView.document.dirtyCount == 0 else { return NSSound.beep() } // save first (⌘S)
-        reviewView.close()
-        repoPath = path
-        RecentProjects.add(path)
-        window.title = "pairprogram — \((path as NSString).lastPathComponent)"
-        reviewView = ReviewView(repoPath: path)
-        reviewView.onBaseChanged = { [weak self] _ in self?.toolbar.refreshTitles() }
-        sidebar = FileTreeSidebar()
-        wireSidebar()
-        let frame = window.frame // a new content view controller resizes the window to fit
-        window.contentViewController = makeSplit()
-        window.setFrame(frame, display: true)
-        toolbar.repoPath = path
-        toolbar.review = reviewView
-        contextWindow?.close()
-        contextWindow = nil // per repo
-        toolbar.setContextCount(ContextWindowController.enabledCount(repo: path))
-        reviewView.reload()
+    private func makeController(repoPath: String, first: Bool = false) -> ProjectWindowController {
+        let c = ProjectWindowController(repoPath: repoPath, first: first)
+        c.onClose = { [weak self] closed in self?.controllers.removeAll { $0 === closed } }
+        controllers.append(c)
+        return c
     }
 
-    @objc func openFolder(_ sender: Any?) { toolbar.openFolder(sender) }
+    // MARK: Tabs
 
-    /// Self-test hook: the toolbar, and a way to switch projects like its menu does.
+    /// ⌘T and the tab bar's "+": another tab on the same project; switch it from its toolbar.
+    @objc func newWindowForTab(_ sender: Any?) { openTab(repo: front?.repoPath ?? initialRepo) }
+
+    @discardableResult
+    func openTab(repo: String, start: Bool = true) -> ProjectWindowController {
+        let host = front
+        let c = makeController(repoPath: repo)
+        if let hostWindow = host?.window, let w = c.window {
+            hostWindow.addTabbedWindow(w, ordered: .above)
+        }
+        c.window?.makeKeyAndOrderFront(nil)
+        if start { c.start() }
+        return c
+    }
+
+    /// View a PR in its own tab: the tab already showing it, or a new one.
+    func viewPullRequest(_ n: Int, repo: String, done: @escaping (String?) -> Void) {
+        if let tab = controllers.first(where: { $0.repoPath == repo && $0.isShowing(pr: n) }), let w = tab.window {
+            w.tabGroup?.selectedWindow = w // bring its tab forward
+            w.makeKeyAndOrderFront(nil)
+            tab.review.openPullRequest(n, done: done) // re-fetch: it may have new commits
+            return
+        }
+        let tab = openTab(repo: repo, start: false)
+        tab.review.openPullRequest(n, done: done)
+    }
+
+    /// Self-test hook: the front tab's toolbar and review, and switching projects like its menu does.
     static var current: AppDelegate? { NSApp.delegate as? AppDelegate }
-    var sourceToolbar: SourceToolbar { toolbar }
-    var currentReview: ReviewView { reviewView }
+    var sourceToolbar: SourceToolbar { front!.sourceToolbar }
+    var currentReview: ReviewView { front!.review }
+    var tabCount: Int { controllers.count }
+    func open(repo path: String) { front?.open(repo: path) }
 
-    private func makeSplit() -> NSSplitViewController {
-        let split = NSSplitViewController()
-        let side = NSSplitViewItem(sidebarWithViewController: sidebar)
-        side.minimumThickness = 220
-        side.maximumThickness = 420
-        side.canCollapse = true
-        let content = NSViewController()
-        content.view = reviewView
-        split.addSplitViewItem(side)
-        split.addSplitViewItem(NSSplitViewItem(viewController: content))
-        commentsPanel = CommentsPanel()
-        wireComments()
-        let comments = NSSplitViewItem(inspectorWithViewController: commentsPanel)
-        comments.minimumThickness = 240
-        comments.maximumThickness = 420
-        comments.canCollapse = true
-        comments.isCollapsed = UserDefaults.standard.bool(forKey: "pairprogram.commentsHidden")
-        split.addSplitViewItem(comments)
-        commentsItem = comments
-        split.splitView.autosaveName = "pairprogram.split"
-        return split
-    }
+    // MARK: Window actions → front tab
 
-    private func wireComments() {
-        commentsPanel.onSelect = { [weak self] t in self?.reviewView.document.scrollToThread(t) }
-        reviewView.document.onThreadsChanged = { [weak self] in
-            guard let self else { return }
-            let items = self.reviewView.document.panelItems
-            self.commentsPanel.update(items)
-            self.toolbar.setCommentCount(items.filter { $0.status != .resolved }.count)
-        }
-    }
-
-    private var prPopover: NSPopover?
-
-    @objc func openPullRequest(_ sender: Any?) {
-        let picker = PullRequestPicker(repo: repoPath)
-        let popover = NSPopover()
-        popover.behavior = .transient
-        popover.contentViewController = picker
-        picker.onOpen = { [weak self, weak popover] n, done in
-            self?.reviewView.openPullRequest(n) { error in
-                done(error)
-                if error == nil { popover?.close(); self?.toolbar.refreshTitles() }
-            }
-        }
-        prPopover = popover
-        if let anchor = toolbar.changesAnchor { popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY) }
-    }
-
-    @objc func openContext(_ sender: Any?) {
-        if contextWindow == nil {
-            let c = ContextWindowController(repo: repoPath)
-            c.onChange = { [weak self] n in self?.toolbar.setContextCount(n) }
-            contextWindow = c
-        }
-        contextWindow?.showWindow(nil)
-        contextWindow?.window?.center()
-    }
-
-    @objc func toggleComments(_ sender: Any?) {
-        guard let item = commentsItem else { return }
-        item.animator().isCollapsed.toggle()
-        UserDefaults.standard.set(item.isCollapsed, forKey: "pairprogram.commentsHidden")
-    }
-
-    private func wireSidebar() {
-        sidebar.isDirty = { [weak self] i in self?.reviewView.document.editor(i)?.isDirty ?? false }
-        sidebar.onSelectFile = { [weak self] i in self?.reviewView.document.scrollToFile(i) }
-        reviewView.onLoad = { [weak self] files in self?.sidebar.setFiles(files) }
-        reviewView.onFileChanged = { [weak self] i in self?.sidebar.refresh(i) }
-        reviewView.onCurrentFile = { [weak self] i in self?.sidebar.reveal(i) }
-    }
+    @objc func openFolder(_ sender: Any?) { front?.openFolder(sender) }
+    @objc func openPullRequest(_ sender: Any?) { front?.openPullRequest(sender) }
+    @objc func showComments(_ sender: Any?) { front?.showComments(sender) }
+    @objc func showPullRequests(_ sender: Any?) { front?.showPullRequests(sender) }
+    @objc func openContext(_ sender: Any?) { front?.openContext(sender) }
+    @objc func toggleComments(_ sender: Any?) { front?.toggleComments(sender) }
+    @objc func collapseAll(_ sender: Any?) { front?.collapseAll(sender) }
+    @objc func expandAll(_ sender: Any?) { front?.expandAll(sender) }
+    @objc func toggleResolved(_ sender: Any?) { front?.toggleResolved(sender) }
+    @objc func saveDocument(_ sender: Any?) { front?.saveDocument(sender) }
+    @objc func reloadReview(_ sender: Any?) { front?.reloadReview(sender) }
 
     // MARK: Settings
 
@@ -201,16 +126,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Style.shared.selectTheme(name)
     }
 
-    @objc func collapseAll(_ sender: Any?) { reviewView.document.setAllCollapsed(true) }
-    @objc func expandAll(_ sender: Any?) { reviewView.document.setAllCollapsed(false) }
-
-    @objc func toggleResolved(_ sender: Any?) {
-        reviewView.document.setShowResolved(!ReviewFile.showResolved)
-    }
-
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.item(withTitle: "Show Resolved Comments")?.state = ReviewFile.showResolved ? .on : .off
-        menu.item(withTitle: "Show Comments")?.state = commentsItem?.isCollapsed == false ? .on : .off
+        menu.item(withTitle: "Show Right Panel")?.state = front?.commentsVisible == true ? .on : .off
         let style = Style.shared
         if let appearance = menu.item(withTitle: "Appearance")?.submenu {
             appearance.removeAllItems()
@@ -243,16 +161,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 
-    @objc func saveDocument(_ sender: Any?) {
-        reviewView.saveAll()
-    }
-
-    @objc func reloadReview(_ sender: Any?) {
-        let choice = reviewChoice(repoRoot: repoPath)
-        if choice.mode == .pullRequest, let n = choice.pr { return reviewView.openPullRequest(Int(n)) } // re-fetch: new commits
-        reviewView.reload()
-    }
-
     private func makeMainMenu() -> NSMenu {
         let main = NSMenu()
 
@@ -268,7 +176,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let fileItem = NSMenuItem()
         let fileMenu = NSMenu(title: "File")
+        fileMenu.addItem(withTitle: "New Tab", action: #selector(newWindowForTab(_:)), keyEquivalent: "t")
         fileMenu.addItem(withTitle: "Open Folder…", action: #selector(openFolder(_:)), keyEquivalent: "o")
+        fileMenu.addItem(withTitle: "Close Tab", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         fileMenu.addItem(.separator())
         fileMenu.addItem(withTitle: "Save", action: #selector(saveDocument(_:)), keyEquivalent: "s")
         fileMenu.addItem(withTitle: "Reload", action: #selector(reloadReview(_:)), keyEquivalent: "r")
@@ -289,7 +199,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let reviewItem = NSMenuItem()
         let reviewMenu = NSMenu(title: "Review")
-        let pr = reviewMenu.addItem(withTitle: "Open Pull Request…", action: #selector(openPullRequest(_:)), keyEquivalent: "p")
+        let pr = reviewMenu.addItem(withTitle: "View Pull Request…", action: #selector(openPullRequest(_:)), keyEquivalent: "p")
         pr.keyEquivalentModifierMask = [.command, .shift]
         reviewMenu.addItem(withTitle: "Context…", action: #selector(openContext(_:)), keyEquivalent: "k")
         reviewItem.submenu = reviewMenu
@@ -315,10 +225,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let expand = viewMenu.addItem(withTitle: "Expand All Files", action: #selector(expandAll(_:)), keyEquivalent: String(UnicodeScalar(NSRightArrowFunctionKey)!))
         expand.keyEquivalentModifierMask = [.option, .command]
         viewMenu.addItem(.separator())
-        let comments = viewMenu.addItem(withTitle: "Show Comments", action: #selector(toggleComments(_:)), keyEquivalent: "0")
+        let comments = viewMenu.addItem(withTitle: "Show Right Panel", action: #selector(toggleComments(_:)), keyEquivalent: "0")
         comments.keyEquivalentModifierMask = [.option, .command]
         viewMenu.addItem(withTitle: "Show Resolved Comments", action: #selector(toggleResolved(_:)), keyEquivalent: "R")
         viewMenu.addItem(.separator())
+        let c1 = viewMenu.addItem(withTitle: "Comments", action: #selector(showComments(_:)), keyEquivalent: "1")
+        c1.keyEquivalentModifierMask = [.option, .command]
+        let c2 = viewMenu.addItem(withTitle: "Pull Requests", action: #selector(showPullRequests(_:)), keyEquivalent: "2")
+        c2.keyEquivalentModifierMask = [.option, .command]
         let toggle = viewMenu.addItem(withTitle: "Toggle Sidebar", action: #selector(NSSplitViewController.toggleSidebar(_:)), keyEquivalent: "s")
         toggle.keyEquivalentModifierMask = [.control, .command]
         viewItem.submenu = viewMenu

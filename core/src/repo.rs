@@ -195,7 +195,7 @@ pub fn list_worktrees(repo_root: String) -> Result<Vec<Worktree>, CoreError> {
             if let Some(p) = line.strip_prefix("worktree ") { path = Some(p.to_string()) }
             if let Some(b) = line.strip_prefix("branch ") { branch = Some(b.trim_start_matches("refs/heads/").to_string()) }
         }
-        if let Some(path) = path {
+        if let Some(path) = path.filter(|p| !p.contains("/pairprogram/checkouts/")) { // agents' private checkouts aren't yours
             let is_current = std::fs::canonicalize(&path).map(|p| p == here).unwrap_or(false);
             trees.push(Worktree { path, branch, is_current });
         }
@@ -264,6 +264,32 @@ pub fn fetch_pull_request(repo_root: String, remote: String, number: u32, base_b
         return Err(CoreError::Git { message: String::from_utf8_lossy(&out.stderr).trim().to_string() });
     }
     Ok(())
+}
+
+/// A private, detached checkout of the commit being reviewed (a PR's head or
+/// one commit), for agents to read: `<git-dir>/pairprogram/checkouts/<sha>`.
+/// Not a branch, so there's nothing to push; your own checkout is untouched.
+#[uniffi::export]
+pub fn review_checkout(repo_root: String) -> Result<String, CoreError> {
+    let base = review_base(repo_root.clone())?;
+    let Some(sha) = base.target else { return Err(CoreError::Git { message: "the working tree is already checked out".into() }) };
+    let common = stdout(git(&repo_root, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?)
+        .ok_or_else(|| CoreError::Git { message: "not a git repository".into() })?;
+    let dir = std::path::Path::new(&common).join("pairprogram/checkouts").join(&sha[..12.min(sha.len())]);
+    let path = dir.display().to_string();
+    if dir.join(".git").exists() {
+        // Reuse it; make sure it's exactly the reviewed commit (an agent can't have changed it, but be sure).
+        let out = git(&path, &["checkout", "--detach", "--force", "--quiet", &sha])?;
+        if out.status.success() {
+            return Ok(path);
+        }
+    }
+    let _ = git(&repo_root, &["worktree", "prune"]);
+    let out = git(&repo_root, &["worktree", "add", "--detach", "--force", "--quiet", &path, &sha])?;
+    if !out.status.success() {
+        return Err(CoreError::Git { message: String::from_utf8_lossy(&out.stderr).trim().to_string() });
+    }
+    Ok(path)
 }
 
 /// The commits a review picker offers: this branch's commits since it forked
@@ -511,6 +537,16 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&branch.stdout).trim(), "main");
         let commits = review_commits(root.clone(), 10).unwrap();
         assert_eq!(commits.commits.iter().map(|c| c.summary.as_str()).collect::<Vec<_>>(), vec!["their change"]);
+
+        // Agents get a private, detached checkout of the PR; mine stays as it was.
+        let checkout = review_checkout(root.clone()).unwrap();
+        assert!(checkout.contains("/pairprogram/checkouts/"), "{checkout}");
+        assert_eq!(std::fs::read_to_string(std::path::Path::new(&checkout).join("a.txt")).unwrap(), "two\n");
+        let head = Command::new("git").args(["branch", "--show-current"]).current_dir(&checkout).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), ""); // detached: no branch to push
+        assert_eq!(review_checkout(root.clone()).unwrap(), checkout); // reused
+        assert_eq!(list_worktrees(root.clone()).unwrap().len(), 1); // hidden from the worktree picker
+        assert_eq!(std::fs::read_to_string(me.join("a.txt")).unwrap(), "one\n");
         let _ = std::fs::remove_dir_all(&base);
     }
 

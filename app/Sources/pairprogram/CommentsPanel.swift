@@ -28,8 +28,6 @@ final class CommentsPanel: NSViewController {
 
     override func loadView() {
         let root = NSView()
-        let title = NSTextField(labelWithString: "Comments")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
         filterControl.controlSize = .small
         filterControl.selectedSegment = 0
         filterControl.target = self
@@ -44,14 +42,12 @@ final class CommentsPanel: NSViewController {
         empty.textColor = .secondaryLabelColor
         empty.alignment = .center
 
-        for v in [title, filterControl, scroll, empty] as [NSView] {
+        for v in [filterControl, scroll, empty] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
         NSLayoutConstraint.activate([
-            title.topAnchor.constraint(equalTo: root.safeAreaLayoutGuide.topAnchor, constant: 12),
-            title.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 14),
-            filterControl.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 10),
+            filterControl.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
             filterControl.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             filterControl.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
             scroll.topAnchor.constraint(equalTo: filterControl.bottomAnchor, constant: 10),

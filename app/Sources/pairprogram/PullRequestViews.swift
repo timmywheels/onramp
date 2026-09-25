@@ -1,17 +1,27 @@
 import AppKit
 
-/// "Open Pull Request": your review requests, your PRs, or all open ones —
-/// or type a number / paste a URL.
-final class PullRequestPicker: NSViewController, NSTextFieldDelegate {
+/// The Pull Requests sidebar: every open PR, searchable and filterable by
+/// review status, author, draft and checks. Click one to view it here.
+final class PullRequestList: NSViewController, NSSearchFieldDelegate {
+    enum ReviewFilter: String, CaseIterable { case any = "Any", requestedFromMe = "Requested from me", needsReview = "Needs review", approved = "Approved", changesRequested = "Changes requested" }
+    enum StateFilter: String, CaseIterable { case open = "Open", ready = "Ready", draft = "Draft" }
+    enum ChecksFilter: String, CaseIterable { case any = "Any", passing = "Passing", failing = "Failing", pending = "Pending" }
+
     private let repo: String
-    private let filterControl = NSSegmentedControl(labels: GitHub.Filter.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
-    private let field = NSTextField()
-    private let list = PickerList()
+    private var items: [GitHub.PRItem] = []
+    private var me: String?
+    private var review = ReviewFilter.any, author: String? = nil, state = StateFilter.open, checks = ChecksFilter.any
+    private let search = NSSearchField()
+    private let chips = NSStackView()
     private let scroll = NSScrollView()
+    private let list = PRRows()
     private let status = NSTextField(wrappingLabelWithString: "")
-    private var loadID = 0
-    /// Fetches the PR and switches the review; returns an error to show, or nil.
-    var onOpen: ((Int, @escaping (String?) -> Void) -> Void)?
+    private let chooseGh = NSButton(title: "Choose gh…", target: nil, action: nil)
+    private var loading = false
+    /// The PR shown in this tab (highlighted).
+    var current: Int? { didSet { list.subviews.forEach { $0.needsDisplay = true }; list.current = current } }
+    /// View a PR; `done` gets an error to show, or nil.
+    var onView: ((Int, @escaping (String?) -> Void) -> Void)?
 
     init(repo: String) {
         self.repo = repo
@@ -21,141 +31,263 @@ final class PullRequestPicker: NSViewController, NSTextFieldDelegate {
     required init?(coder: NSCoder) { fatalError() }
 
     override func loadView() {
-        let width: CGFloat = 460
-        let root = NSView(frame: NSRect(x: 0, y: 0, width: width, height: 440))
-        let title = PopoverUI.title("Open Pull Request")
-        filterControl.selectedSegment = 0
-        filterControl.segmentDistribution = .fillEqually
-        filterControl.target = self
-        filterControl.action = #selector(reloadList)
-        field.placeholderString = "PR number or URL"
-        field.delegate = self
-        field.font = .systemFont(ofSize: 13)
-        let open = NSButton(title: "Open", target: self, action: #selector(openTyped))
-        open.bezelStyle = .push
-        open.keyEquivalent = "\r"
+        let root = NSView()
+        search.placeholderString = "Search, #number or URL"
+        search.delegate = self
+        search.sendsSearchStringImmediately = true
+        search.target = self
+        search.action = #selector(searchChanged)
+        search.controlSize = .small
+        chips.orientation = .horizontal
+        chips.spacing = 6
+        chips.alignment = .centerY
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = false
         scroll.documentView = list
+        scroll.contentView.postsFrameChangedNotifications = true
+        NotificationCenter.default.addObserver(self, selector: #selector(layoutRows), name: NSView.frameDidChangeNotification, object: scroll.contentView)
         status.font = .systemFont(ofSize: 12)
         status.textColor = .secondaryLabelColor
         status.alignment = .center
-        for v in [title, filterControl, scroll, status, field, open] as [NSView] {
+        chooseGh.bezelStyle = .push
+        chooseGh.target = self
+        chooseGh.action = #selector(chooseGhClicked)
+        chooseGh.isHidden = true
+        for v in [search, chips, scroll, status, chooseGh] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
         NSLayoutConstraint.activate([
-            root.widthAnchor.constraint(equalToConstant: width),
-            root.heightAnchor.constraint(equalToConstant: 440),
-            title.topAnchor.constraint(equalTo: root.topAnchor, constant: 18),
-            title.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
-            filterControl.topAnchor.constraint(equalTo: title.bottomAnchor, constant: 12),
-            filterControl.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
-            filterControl.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
-            scroll.topAnchor.constraint(equalTo: filterControl.bottomAnchor, constant: 10),
-            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 8),
-            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -8),
-            scroll.bottomAnchor.constraint(equalTo: field.topAnchor, constant: -12),
-            status.centerYAnchor.constraint(equalTo: scroll.centerYAnchor),
-            status.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 30),
-            status.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -30),
-            field.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
-            field.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -16),
-            open.leadingAnchor.constraint(equalTo: field.trailingAnchor, constant: 8),
-            open.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
-            open.centerYAnchor.constraint(equalTo: field.centerYAnchor),
+            search.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
+            search.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
+            search.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -10),
+            chips.topAnchor.constraint(equalTo: search.bottomAnchor, constant: 8),
+            chips.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 10),
+            chips.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -10),
+            scroll.topAnchor.constraint(equalTo: chips.bottomAnchor, constant: 8),
+            scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
+            status.topAnchor.constraint(equalTo: chips.bottomAnchor, constant: 40),
+            status.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 20),
+            status.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -20),
+            chooseGh.topAnchor.constraint(equalTo: status.bottomAnchor, constant: 12),
+            chooseGh.centerXAnchor.constraint(equalTo: root.centerXAnchor),
         ])
         view = root
-        preferredContentSize = root.frame.size
-        reloadList()
+        buildChips()
     }
 
-    override func viewDidAppear() {
-        super.viewDidAppear()
-        view.window?.makeFirstResponder(field)
-    }
-
-    @objc private func reloadList() {
-        loadID += 1
-        let id = loadID, repo = self.repo
-        let filter = GitHub.Filter.allCases[max(0, filterControl.selectedSegment)]
-        show(status: "Loading…")
-        list.set([])
+    /// Fetch the open PRs (and your login, for "me" filters).
+    func refresh() {
+        guard !loading else { return }
+        loading = true
+        if items.isEmpty { show("Loading pull requests…") }
+        let repo = self.repo
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try GitHub.list(repo: repo, filter: filter) }
+            let me = GitHub.myLogin(repo: repo)
+            let result = Result { try GitHub.listAll(repo: repo) }
             DispatchQueue.main.async { [weak self] in
-                guard let self, id == self.loadID else { return } // a newer filter won
+                guard let self else { return }
+                self.loading = false
+                self.me = me
                 switch result {
-                case let .success(prs):
-                    self.list.set(prs) { [weak self] n in self?.open(n) }
-                    self.show(status: prs.isEmpty ? (filter == .reviewRequested ? "No reviews requested from you." : "No pull requests.") : nil)
+                case let .success(prs): self.items = prs; self.apply()
                 case let .failure(e):
-                    self.show(status: "\(e)", error: true)
+                    self.items = []
+                    self.list.set([])
+                    self.show("\(e)", error: true)
+                    self.chooseGh.isHidden = !((e as? GitHub.Failure)?.notFound ?? false)
                 }
-                self.layoutList()
+                self.buildChips()
             }
         }
     }
 
-    override func viewDidLayout() {
-        super.viewDidLayout()
-        layoutList()
-    }
+    func focusSearch() { view.window?.makeFirstResponder(search) }
 
-    private func layoutList() {
-        let w = scroll.contentSize.width
-        var y: CGFloat = 0
-        for row in list.subviews {
-            row.frame = NSRect(x: 0, y: y, width: w, height: PickerRow.height)
-            y += PickerRow.height
+    /// Pick the gh binary; saved as gh_path in settings.json.
+    @objc private func chooseGhClicked() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.message = "Where is the GitHub CLI (gh)?"
+        panel.directoryURL = URL(fileURLWithPath: "/opt/homebrew/bin")
+        panel.treatsFilePackagesAsDirectories = true
+        guard let window = view.window else { return }
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            MainActor.assumeIsolated {
+                Style.shared.update { $0.ghPath = url.path }
+                self?.chooseGh.isHidden = true
+                self?.refresh()
+            }
         }
-        list.frame = NSRect(x: 0, y: 0, width: w, height: max(y, scroll.contentSize.height))
     }
 
-    private func show(status text: String?, error: Bool = false) {
+    // MARK: Filters
+
+    private func buildChips() {
+        chips.arrangedSubviews.forEach { $0.removeFromSuperview() }
+        chips.addArrangedSubview(chip("Review", review.rawValue, review != .any, ReviewFilter.allCases.map(\.rawValue)) { [weak self] v in self?.review = ReviewFilter(rawValue: v) ?? .any })
+        let authors = ["Anyone", "Me"] + Array(Set(items.map(\.author))).filter { $0 != me }.sorted()
+        let authorLabel = author == nil ? "Anyone" : author == me ? "Me" : author!
+        chips.addArrangedSubview(chip("Author", authorLabel, author != nil, authors) { [weak self] v in
+            self?.author = v == "Anyone" ? nil : v == "Me" ? (self?.me ?? v) : v
+        })
+        chips.addArrangedSubview(chip("", state.rawValue, state != .open, StateFilter.allCases.map(\.rawValue)) { [weak self] v in self?.state = StateFilter(rawValue: v) ?? .open })
+        chips.addArrangedSubview(chip("Checks", checks.rawValue, checks != .any, ChecksFilter.allCases.map(\.rawValue)) { [weak self] v in self?.checks = ChecksFilter(rawValue: v) ?? .any })
+    }
+
+    /// A capsule showing "Label: value ⌄" that opens a menu of choices; tinted when set.
+    private func chip(_ label: String, _ value: String, _ active: Bool, _ options: [String], _ pick: @escaping (String) -> Void) -> NSView {
+        let b = ChipButton()
+        b.set(text: label.isEmpty ? value : "\(label): \(value)", active: active)
+        b.options = options
+        b.selected = value
+        b.onPick = { [weak self] v in pick(v); self?.buildChips(); self?.apply() }
+        return b
+    }
+
+    @objc private func searchChanged() { apply() }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        // Enter on "#123" or a URL views it even if it isn't in the list.
+        guard (obj.userInfo?["NSTextMovement"] as? Int) == NSTextMovement.return.rawValue,
+              let n = GitHub.number(from: search.stringValue), !search.stringValue.isEmpty,
+              search.stringValue.contains("#") || search.stringValue.contains("/pull/") || Int(search.stringValue) != nil else { return }
+        view(n)
+    }
+
+    private func apply() {
+        let q = search.stringValue.trimmingCharacters(in: .whitespaces).lowercased()
+        let shown = items.filter { pr in
+            if !q.isEmpty, !(pr.title.lowercased().contains(q) || pr.author.lowercased().contains(q) || "#\(pr.number)".contains(q)
+                            || pr.headRefName.lowercased().contains(q) || pr.labels.contains { $0.lowercased().contains(q) }) { return false }
+            switch state {
+            case .open: break
+            case .ready: if pr.isDraft { return false }
+            case .draft: if !pr.isDraft { return false }
+            }
+            if let author, pr.author != author { return false }
+            switch review {
+            case .any: break
+            case .requestedFromMe: if !(me.map { pr.requested.contains($0) } ?? false) { return false }
+            case .needsReview: if pr.review == .approved || pr.review == .changesRequested { return false }
+            case .approved: if pr.review != .approved { return false }
+            case .changesRequested: if pr.review != .changesRequested { return false }
+            }
+            switch checks {
+            case .any: break
+            case .passing: if pr.checks != .passing { return false }
+            case .failing: if pr.checks != .failing { return false }
+            case .pending: if pr.checks != .pending { return false }
+            }
+            return true
+        }
+        list.me = me
+        list.current = current
+        list.set(shown) { [weak self] n in self?.view(n) }
+        show(shown.isEmpty ? (items.isEmpty ? "No open pull requests." : "No pull requests match these filters.") : nil)
+        layoutRows()
+    }
+
+    private func view(_ n: Int) {
+        show(nil)
+        onView?(n) { [weak self] error in
+            if let error { self?.show(error, error: true) } else { self?.current = n }
+        }
+    }
+
+    private func show(_ text: String?, error: Bool = false) {
         status.stringValue = text ?? ""
         status.isHidden = text == nil
         status.textColor = error ? .systemRed : .secondaryLabelColor
     }
 
-    @objc private func openTyped() {
-        guard let n = GitHub.number(from: field.stringValue) else { return show(status: "Type a PR number, like 123, or paste its URL.", error: true) }
-        open(n)
-    }
-
-    private func open(_ n: Int) {
-        list.set([])
-        show(status: "Fetching #\(n)…")
-        onOpen?(n) { [weak self] error in
-            if let error { self?.show(status: error, error: true) }
+    @objc private func layoutRows() {
+        let w = scroll.contentSize.width
+        var y: CGFloat = 0
+        for row in list.subviews {
+            row.frame = NSRect(x: 0, y: y, width: w, height: PRRow.height)
+            y += PRRow.height
         }
+        list.frame = NSRect(x: 0, y: 0, width: w, height: max(y, scroll.contentSize.height))
     }
 }
 
-private final class PickerList: NSView {
+/// "Review: Any ⌄" — a small capsule that pops up its choices.
+private final class ChipButton: CapsuleButton {
+    var options: [String] = []
+    var selected = ""
+    var onPick: ((String) -> Void)?
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        horizontalPadding = 9
+        target = self
+        action = #selector(open)
+        heightAnchor.constraint(equalToConstant: 22).isActive = true
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func set(text: String, active: Bool) {
+        let s = NSMutableAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 11, weight: active ? .semibold : .regular),
+            .foregroundColor: active ? DiffStyle.accent : NSColor.secondaryLabelColor,
+        ])
+        if let chevron = PickerButton.padded("chevron.down", left: 4, right: 0, pointSize: 7.5, color: active ? DiffStyle.accent : .tertiaryLabelColor) {
+            let a = NSTextAttachment()
+            a.image = chevron
+            a.bounds = NSRect(x: 0, y: 1, width: chevron.size.width, height: chevron.size.height)
+            s.append(NSAttributedString(attachment: a))
+        }
+        attributedTitle = s
+        widthAnchor.constraint(equalToConstant: ceil(cell!.cellSize.width) + 2 * horizontalPadding).isActive = true
+    }
+
+    @objc private func open() {
+        let menu = NSMenu()
+        for o in options {
+            let item = menu.addItem(withTitle: o, action: #selector(picked(_:)), keyEquivalent: "")
+            item.target = self
+            item.state = o == selected ? .on : .off
+        }
+        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: bounds.height + 4), in: self)
+    }
+
+    @objc private func picked(_ sender: NSMenuItem) { onPick?(sender.title) }
+}
+
+private final class PRRows: NSView {
+    var me: String?
+    var current: Int?
     override var isFlipped: Bool { true }
 
-    func set(_ prs: [GitHub.PRSummary], onPick: @escaping (Int) -> Void = { _ in }) {
+    func set(_ prs: [GitHub.PRItem], onPick: @escaping (Int) -> Void = { _ in }) {
         subviews.forEach { $0.removeFromSuperview() }
         for pr in prs {
-            let row = PickerRow(pr)
+            let row = PRRow(pr, list: self)
             row.onClick = { onPick(pr.number) }
             addSubview(row)
         }
     }
 }
 
-/// #123  Title                         Draft
-/// author · head → base · 2h ago
-private final class PickerRow: NSView {
-    static let height: CGFloat = 50
-    let pr: GitHub.PRSummary
+/// #153  Title
+/// author · 2h · +120 −8          ✓ ● draft
+private final class PRRow: NSView {
+    static let height: CGFloat = 54
+    let pr: GitHub.PRItem
+    weak var list: PRRows?
     var onClick: (() -> Void)?
     private var hovering = false { didSet { needsDisplay = true } }
 
-    init(_ pr: GitHub.PRSummary) {
+    init(_ pr: GitHub.PRItem, list: PRRows) {
         self.pr = pr
+        self.list = list
         super.init(frame: .zero)
     }
 
@@ -163,29 +295,51 @@ private final class PickerRow: NSView {
     override var isFlipped: Bool { true }
 
     override func draw(_ dirtyRect: NSRect) {
-        if hovering {
-            NSColor.labelColor.withAlphaComponent(0.07).setFill()
-            NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 2), xRadius: 6, yRadius: 6).fill()
+        let isCurrent = list?.current == pr.number
+        if isCurrent || hovering {
+            (isCurrent ? DiffStyle.accent.withAlphaComponent(0.18) : NSColor.labelColor.withAlphaComponent(0.06)).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 2), xRadius: 6, yRadius: 6).fill()
         }
         let pad: CGFloat = 14
+        // Right-hand badges: requested-from-you, review decision, checks, draft.
         var right = bounds.width - pad
-        if pr.isDraft {
-            let chip = NSAttributedString(string: "Draft", attributes: [.font: NSFont.systemFont(ofSize: 10.5, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor])
-            let s = chip.size()
-            let r = NSRect(x: right - s.width - 12, y: 9, width: s.width + 12, height: 16)
-            NSColor.labelColor.withAlphaComponent(0.1).setFill()
-            NSBezierPath(roundedRect: r, xRadius: 8, yRadius: 8).fill()
-            chip.draw(at: NSPoint(x: r.minX + 6, y: r.minY + (16 - s.height) / 2))
-            right = r.minX - 8
+        func badge(_ text: String, _ color: NSColor) {
+            let a = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 10, weight: .semibold), .foregroundColor: color])
+            let s = a.size()
+            let r = NSRect(x: right - s.width - 10, y: 9, width: s.width + 10, height: 15)
+            color.withAlphaComponent(0.15).setFill()
+            NSBezierPath(roundedRect: r, xRadius: 7.5, yRadius: 7.5).fill()
+            a.draw(at: NSPoint(x: r.minX + 5, y: r.minY + (15 - s.height) / 2))
+            right = r.minX - 5
         }
-        let title = NSMutableAttributedString(string: "#\(pr.number)  ", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12.5, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor])
-        title.append(NSAttributedString(string: pr.title, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .medium), .foregroundColor: NSColor.labelColor]))
-        title.draw(with: NSRect(x: pad, y: 8, width: right - pad, height: 18), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        switch pr.checks {
+        case .failing: badge("✗ checks", DiffStyle.deletedAccent)
+        case .pending: badge("● checks", .systemYellow)
+        case .passing: badge("✓ checks", DiffStyle.addedAccent)
+        case .none: break
+        }
+        switch pr.review {
+        case .approved: badge("approved", DiffStyle.addedAccent)
+        case .changesRequested: badge("changes", DiffStyle.deletedAccent)
+        default: break
+        }
+        if let me = list?.me, pr.requested.contains(me) { badge("you", DiffStyle.accent) }
+        if pr.isDraft { badge("draft", .secondaryLabelColor) }
+
+        let title = NSMutableAttributedString(string: "#\(pr.number)  ", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11.5, weight: .regular), .foregroundColor: NSColor.secondaryLabelColor])
+        title.append(NSAttributedString(string: pr.title, attributes: [.font: NSFont.systemFont(ofSize: 12.5, weight: .medium), .foregroundColor: NSColor.labelColor]))
+        title.draw(with: NSRect(x: pad, y: 8, width: right - pad, height: 17), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+
         let when = RelativeDateTimeFormatter()
-        when.unitsStyle = .short
-        let meta = "\(pr.author.login) · \(pr.headRefName) → \(pr.baseRefName) · \(when.localizedString(for: pr.updatedAt, relativeTo: Date()))"
-        NSAttributedString(string: meta, attributes: [.font: NSFont.systemFont(ofSize: 11.5), .foregroundColor: NSColor.secondaryLabelColor])
-            .draw(with: NSRect(x: pad, y: 28, width: bounds.width - 2 * pad, height: 16), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        when.unitsStyle = .abbreviated
+        let meta = NSMutableAttributedString(string: "\(pr.author) · \(when.localizedString(for: pr.updatedAt, relativeTo: Date()))   ",
+                                             attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor])
+        let digits = NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)
+        meta.append(NSAttributedString(string: "+\(pr.additions)", attributes: [.font: digits, .foregroundColor: DiffStyle.addedAccent]))
+        meta.append(NSAttributedString(string: " −\(pr.deletions)", attributes: [.font: digits, .foregroundColor: DiffStyle.deletedAccent]))
+        meta.draw(with: NSRect(x: pad, y: 30, width: bounds.width - 2 * pad, height: 15), options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+        NSColor.separatorColor.withAlphaComponent(0.5).setFill()
+        NSRect(x: pad, y: bounds.height - 1, width: bounds.width - 2 * pad, height: 1).fill()
     }
 
     override func updateTrackingAreas() {
@@ -197,6 +351,7 @@ private final class PickerRow: NSView {
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
     override func mouseDown(with event: NSEvent) { onClick?() }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }
 
 /// Above the diff while reviewing a pull request: title, who, where, state —

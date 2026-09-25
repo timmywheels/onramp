@@ -51,13 +51,55 @@ enum GitHub {
         }
     }
 
-    struct Failure: Error, CustomStringConvertible { let description: String }
+    struct Failure: Error, CustomStringConvertible {
+        let description: String
+        var notFound = false
+    }
 
-    /// Run `gh` in `repo` through a login shell (your PATH), returning stdout.
-    private static func gh(_ args: [String], repo: String) throws -> Data {
+    /// `gh_path` from settings.json (set by Style); "" = find it.
+    nonisolated(unsafe) static var configuredPath = ""
+    nonisolated(unsafe) private static var found: String?
+
+    /// Where gh is: your setting, the usual install spots, then your shell
+    /// (interactive, so ~/.zshrc PATH changes count).
+    static func ghPath() -> String? {
+        let fm = FileManager.default
+        let setting = (configuredPath as NSString).expandingTildeInPath
+        if !setting.isEmpty { return fm.isExecutableFile(atPath: setting) ? setting : nil }
+        if let found, fm.isExecutableFile(atPath: found) { return found }
+        let home = fm.homeDirectoryForCurrentUser.path
+        let spots = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "\(home)/.local/bin/gh", "\(home)/bin/gh", "/usr/bin/gh",
+                     "/opt/local/bin/gh", "\(home)/.nix-profile/bin/gh", "/run/current-system/sw/bin/gh"]
+        if let hit = spots.first(where: fm.isExecutableFile(atPath:)) { found = hit; return hit }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-lc", "gh " + args.map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }.joined(separator: " ")]
+        p.arguments = ["-ilc", "command -v gh"]
+        let out = Pipe()
+        p.standardOutput = out
+        p.standardError = FileHandle.nullDevice
+        p.standardInput = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return nil }
+        p.waitUntilExit()
+        let path = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .split(separator: "\n").last.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+        guard p.terminationStatus == 0, path.hasPrefix("/"), fm.isExecutableFile(atPath: path) else { return nil }
+        found = path
+        return path
+    }
+
+    /// Run gh in `repo`, returning stdout.
+    private static func gh(_ args: [String], repo: String) throws -> Data {
+        guard let path = ghPath() else {
+            throw Failure(description: configuredPath.isEmpty
+                ? "Couldn't find the GitHub CLI (gh). Install it (brew install gh), or choose where it is."
+                : "gh_path in settings.json (\(configuredPath)) isn't an executable.", notFound: true)
+        }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: path)
+        p.arguments = args
+        var env = ProcessInfo.processInfo.environment // apps launched from the Dock get a bare PATH; gh runs git
+        env["PATH"] = ([(path as NSString).deletingLastPathComponent, "/opt/homebrew/bin", "/usr/local/bin"] + (env["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map(String.init)).joined(separator: ":")
+        p.environment = env
         p.currentDirectoryURL = URL(fileURLWithPath: repo)
         let out = Pipe(), err = Pipe()
         p.standardOutput = out
@@ -68,7 +110,6 @@ enum GitHub {
         let errText = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         p.waitUntilExit()
         guard p.terminationStatus == 0 else {
-            if errText.contains("command not found") { throw Failure(description: "The GitHub CLI isn't installed: brew install gh, then gh auth login") }
             if errText.contains("gh auth login") { throw Failure(description: "Not logged in to GitHub: run gh auth login") }
             throw Failure(description: errText.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first ?? "gh failed")
         }
@@ -99,6 +140,67 @@ enum GitHub {
                   labels: r.labels.map(\.name))
     }
 
+    // MARK: The PR sidebar
+
+    enum Checks { case none, passing, failing, pending }
+    enum Review { case none, required, approved, changesRequested }
+
+    /// One open PR with what the sidebar filters on.
+    struct PRItem {
+        let number: Int
+        let title: String
+        let author: String
+        let headRefName: String
+        let baseRefName: String
+        let updatedAt: Date
+        let isDraft: Bool
+        let additions: Int
+        let deletions: Int
+        let review: Review
+        let requested: [String] // logins (and team names) asked to review
+        let checks: Checks
+        let labels: [String]
+    }
+
+    static func listAll(repo: String) throws -> [PRItem] {
+        struct Check: Decodable { let status: String?; let conclusion: String?; let state: String? }
+        struct Request: Decodable { let login: String?; let name: String? }
+        struct Raw: Decodable {
+            let number: Int, title: String, author: Person, headRefName: String, baseRefName: String, updatedAt: Date, isDraft: Bool
+            let additions: Int, deletions: Int, reviewDecision: String?, reviewRequests: [Request], statusCheckRollup: [Check]?, labels: [Label]
+        }
+        let data = try gh(["pr", "list", "--state", "open", "--limit", "100", "--json",
+                           "number,title,author,headRefName,baseRefName,updatedAt,isDraft,additions,deletions,reviewDecision,reviewRequests,statusCheckRollup,labels"], repo: repo)
+        return try decoder.decode([Raw].self, from: data).map { r in
+            let checks: Checks = {
+                let all = r.statusCheckRollup ?? []
+                guard !all.isEmpty else { return .none }
+                let bad = ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STARTUP_FAILURE"]
+                if all.contains(where: { bad.contains($0.conclusion ?? "") || bad.contains($0.state ?? "") }) { return .failing }
+                if all.contains(where: { ($0.status.map { $0 != "COMPLETED" } ?? false) || $0.state == "PENDING" || $0.state == "EXPECTED" }) { return .pending }
+                return .passing
+            }()
+            let review: Review = switch r.reviewDecision ?? "" {
+            case "APPROVED": .approved
+            case "CHANGES_REQUESTED": .changesRequested
+            case "REVIEW_REQUIRED": .required
+            default: .none
+            }
+            return PRItem(number: r.number, title: r.title, author: r.author.login, headRefName: r.headRefName, baseRefName: r.baseRefName,
+                          updatedAt: r.updatedAt, isDraft: r.isDraft, additions: r.additions, deletions: r.deletions, review: review,
+                          requested: r.reviewRequests.compactMap { $0.login ?? $0.name }, checks: checks, labels: r.labels.map(\.name))
+        }
+    }
+
+    /// Your GitHub login (for "me" filters), asked once.
+    nonisolated(unsafe) private static var login: String?
+    static func myLogin(repo: String) -> String? {
+        if let login { return login }
+        let data = try? gh(["api", "user", "-q", ".login"], repo: repo)
+        login = data.flatMap { String(data: $0, encoding: .utf8) }?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return login
+    }
+
     /// "123", "#123" or a PR URL → 123.
     static func number(from text: String) -> Int? {
         let t = text.trimmingCharacters(in: .whitespaces)
@@ -124,16 +226,11 @@ enum GitHub {
         cacheURL(repo: repo, number: number).flatMap { try? Data(contentsOf: $0) }.flatMap { try? JSONDecoder().decode(PR.self, from: $0) }
     }
 
-    /// Fetch a PR (read-only: a private ref, no checkout) and switch the review to it.
-    static func open(repo: String, number: Int) throws -> PR {
+    /// Fetch a PR (read-only: a private ref, no checkout). The tab then points its review at it.
+    static func fetch(repo: String, number: Int) throws -> PR {
         let pr = try view(repo: repo, number: number)
         try fetchPullRequest(repoRoot: repo, remote: "origin", number: UInt32(number), baseBranch: pr.baseRefName)
         cache(pr, repo: repo)
-        var c = reviewChoice(repoRoot: repo)
-        c.mode = .pullRequest
-        c.pr = UInt32(number)
-        c.baseBranch = "origin/" + pr.baseRefName
-        try setReviewChoice(repoRoot: repo, choice: c)
         RecentPRs.add(number, title: pr.title, repo: repo)
         return pr
     }

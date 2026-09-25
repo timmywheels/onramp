@@ -30,7 +30,9 @@ enum CLI {
     static func run(_ argv: [String]) -> Int32? {
         guard let command = argv.first, commands.contains(command) else { return nil }
         var args = Array(argv.dropFirst())
-        let dir = take(&args, "-C") ?? FileManager.default.currentDirectoryPath
+        // PAIRPROGRAM_REPO: set for agents working in a PR's private checkout, so their
+        // replies land in the review you have open, not in that checkout.
+        let dir = take(&args, "-C") ?? ProcessInfo.processInfo.environment["PAIRPROGRAM_REPO"] ?? FileManager.default.currentDirectoryPath
         let explicitAuthor = take(&args, "--author") ?? ProcessInfo.processInfo.environment["PAIRPROGRAM_AUTHOR"]
         let author = explicitAuthor ?? "agent"
         let note = take(&args, "--note")

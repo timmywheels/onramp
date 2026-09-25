@@ -42,15 +42,22 @@ final class AgentRunner {
 
     /// The shell command for a run. `resume`: the session to continue (the
     /// one a previous run of ours recorded, never one of your own sessions).
-    static func command(_ target: Target, prompt: String, resume: String?, newSession: String) -> String? {
+    /// Read and answer only: someone else's PR, in a private checkout.
+    private static let claudeReadOnlyTools = claudeTools.split(separator: ",").filter { !["Edit", "Write"].contains($0) }.joined(separator: ",")
+
+    static func command(_ target: Target, prompt: String, resume: String?, newSession: String, readOnly: Bool = false) -> String? {
         let q = "'" + prompt.replacingOccurrences(of: "'", with: "'\\''") + "'"
         switch target {
         case .claude:
             let session = resume.map { "--resume \($0)" } ?? "--session-id \(newSession)"
+            if readOnly {
+                return "claude -p \(q) \(session) --allowedTools '\(claudeReadOnlyTools)' --disallowedTools 'Edit,Write,NotebookEdit,Bash'"
+            }
             return "claude -p \(q) \(session) --permission-mode acceptEdits --allowedTools '\(claudeTools)'"
         case .codex:
-            if let resume { return "codex exec resume \(resume) -c sandbox_mode='\"workspace-write\"' \(q)" }
-            return "codex exec --sandbox workspace-write --approve-for-me \(q)"
+            let sandbox = readOnly ? "read-only" : "workspace-write"
+            if let resume { return "codex exec resume \(resume) -c sandbox_mode='\"\(sandbox)\"' \(q)" }
+            return readOnly ? "codex exec --sandbox read-only \(q)" : "codex exec --sandbox workspace-write --approve-for-me \(q)"
         case .none: return nil
         }
     }
@@ -65,11 +72,14 @@ final class AgentRunner {
     static func lastSession(_ target: Target, repo: String) -> String? { UserDefaults.standard.string(forKey: sessionKey(target, repo)) }
     private static func remember(_ id: String, _ target: Target, repo: String) { UserDefaults.standard.set(id, forKey: sessionKey(target, repo)) }
 
-    func run(_ target: Target, repo: String) {
+    /// `checkout`: a PR (or commit) view — run read-only in that private checkout,
+    /// answering comments in `repo`'s review instead of changing code.
+    func run(_ target: Target, repo: String, checkout: String? = nil, pr: Int? = nil) {
         guard process == nil else { return }
         let wanted = Self.continuesSession(repo: repo) ? Self.lastSession(target, repo: repo) : nil
         let fresh = UUID().uuidString.lowercased()
-        guard let command = Self.command(target, prompt: MCPServer.addressPrompt, resume: wanted, newSession: fresh) else { return }
+        let prompt = checkout == nil ? MCPServer.addressPrompt : MCPServer.prAssistPrompt(pr: pr)
+        guard let command = Self.command(target, prompt: prompt, resume: wanted, newSession: fresh, readOnly: checkout != nil) else { return }
         if target == .claude { Self.remember(wanted ?? fresh, target, repo: repo) } // we chose the id up front
         let log = (try? commentsPath(repoRoot: repo)).map { URL(fileURLWithPath: $0).deletingLastPathComponent().appendingPathComponent("agent-run-\(target.rawValue).log") }
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("pairprogram-agent-run-\(target.rawValue).log")
@@ -82,7 +92,12 @@ final class AgentRunner {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
         p.arguments = ["-lc", command] // login shell: same PATH as your terminal
-        p.currentDirectoryURL = URL(fileURLWithPath: repo)
+        p.currentDirectoryURL = URL(fileURLWithPath: checkout ?? repo)
+        if checkout != nil { // their pairprogram MCP server / CLI must use this review, not the checkout
+            var env = ProcessInfo.processInfo.environment
+            env["PAIRPROGRAM_REPO"] = repo
+            p.environment = env
+        }
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = handle
         p.standardError = handle
@@ -139,7 +154,11 @@ final class ReviewSubmitViewController: NSViewController {
         (.requestChanges, "Request changes", "The agent should address these before this moves on."),
     ]
 
-    init(pending: Int, open: Int, repo: String) {
+    /// Reviewing a PR or a commit: nothing is checked out, so agents can't fix anything here.
+    private let readOnly: Bool
+
+    init(pending: Int, open: Int, repo: String, readOnly: Bool = false) {
+        self.readOnly = readOnly
         self.pending = pending
         self.open = open
         self.repo = repo
@@ -188,7 +207,9 @@ final class ReviewSubmitViewController: NSViewController {
             return box
         }
         PopoverUI.add(PopoverUI.row([sendLabel], boxes, spacing: 14), to: stack, spacingAfter: 4)
-        PopoverUI.add(PopoverUI.note("Checked agents start on it right away, side by side; each claims different comments.", size: 11), to: stack, spacingAfter: 10)
+        PopoverUI.add(PopoverUI.note(readOnly
+            ? "Agents get a private, read-only copy of this code: they investigate and answer your comments. They can't edit, commit or push."
+            : "Checked agents start on it right away, side by side; each claims different comments.", size: 11), to: stack, spacingAfter: 10)
         continueBox.state = AgentRunner.continuesSession(repo: repo) ? .on : .off
         continueBox.font = .systemFont(ofSize: 12)
         continueBox.toolTip = "On: each agent picks up its previous review session, keeping what it learned. Off: a fresh session every time."

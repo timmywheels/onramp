@@ -78,11 +78,56 @@ enum SelfTest {
         if mode == "commands" {
             for t in [AgentRunner.Target.claude, .codex] {
                 for resume in [nil, "0199aaaa-bbbb-cccc-dddd-eeeeffff0000"] {
-                    let c = AgentRunner.command(t, prompt: "PROMPT", resume: resume, newSession: "11111111-2222-3333-4444-555555555555")!
+                    let c = AgentRunner.command(t, prompt: "PROMPT", resume: resume, newSession: "11111111-2222-3333-4444-555555555555", readOnly: true)!
                     log("\(t.rawValue) \(resume == nil ? "fresh" : "continue"): " + c.replacingOccurrences(of: #"--allowedTools '[^']*'"#, with: "--allowedTools '…'", options: .regularExpression))
                 }
             }
             log("done")
+            return
+        }
+        if mode == "prtabs" {
+            Task { @MainActor in
+                guard let app = AppDelegate.current, let first = app.front else { return log("setup") }
+                let repo = first.repoPath
+                for n in [149, 286, 149] {
+                    app.viewPullRequest(n, repo: repo) { e in if let e { MainActor.assumeIsolated { log("error \(e)") } } }
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    log("after #\(n): \(app.tabCount) tabs · front '\(app.front?.window?.title ?? "")'")
+                }
+                log("first tab still: '\(first.window?.title ?? "")' · \(first.review.choice.mode)")
+                log("window id \(app.front!.window!.windowNumber)")
+                log("ready")
+            }
+            return
+        }
+        if mode == "prs" {
+            Task { @MainActor in
+                guard let app = AppDelegate.current, let tab = app.front else { return log("setup") }
+                tab.showPullRequests(nil)
+                try? await Task.sleep(nanoseconds: 5_000_000_000) // gh round trip
+                tab.review.openPullRequest(149) { _ in }
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                log("window id \(tab.window!.windowNumber)")
+                log("ready")
+            }
+            return
+        }
+        if mode == "tabs" {
+            Task { @MainActor in
+                guard let app = AppDelegate.current, let other = ProcessInfo.processInfo.environment["PP_OTHER"] else { return log("setup") }
+                let first = app.front!
+                let second = app.openTab(repo: other)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                second.review.openPullRequest(149) { _ in }
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                let tabs = first.window?.tabbedWindows?.count ?? 1
+                log("tabs: \(app.tabCount) controllers, \(tabs) tabs in one window")
+                log("tab 1: '\(first.window?.title ?? "")' · \(first.review.document.files.count) files")
+                log("tab 2: '\(second.window?.title ?? "")' · \(second.review.document.files.count) files")
+                log("front is tab 2: \(app.front === second)")
+                log("window id \(second.window!.windowNumber)")
+                log("ready")
+            }
             return
         }
         if mode == "pr" {

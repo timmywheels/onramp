@@ -9,6 +9,9 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     private static let changesID = NSToolbarItem.Identifier("pairprogram.changes")
     private static let commentsID = NSToolbarItem.Identifier("pairprogram.comments")
     private static let contextID = NSToolbarItem.Identifier("pairprogram.context")
+    private static let leftToggleID = NSToolbarItem.Identifier("pairprogram.toggleFiles")
+    private let leftToggle = CapsuleButton()
+    var onToggleFiles: (() -> Void)?
     private let contextButton = CapsuleButton()
     private lazy var contextWidth = contextButton.widthAnchor.constraint(equalToConstant: 32)
     var onOpenContext: (() -> Void)?
@@ -37,10 +40,21 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         contextButton.horizontalPadding = 9
         contextButton.toolTip = "Review context: files agents read before working on your comments (⌘K)"
         setContextCount(0)
+        leftToggle.target = self
+        leftToggle.action = #selector(leftClicked)
+        leftToggle.horizontalPadding = 9
+        leftToggle.toolTip = "Show or hide files (⌃⌘S)"
+        if let icon = PickerButton.padded("sidebar.left", left: 0, right: 0, pointSize: 12, color: .secondaryLabelColor) {
+            let a = NSTextAttachment()
+            a.image = icon
+            a.bounds = NSRect(x: 0, y: -2, width: icon.size.width, height: icon.size.height)
+            leftToggle.attributedTitle = NSAttributedString(attachment: a)
+        }
+        leftToggle.widthAnchor.constraint(equalToConstant: 36).isActive = true
         commentsButton.target = self
         commentsButton.action = #selector(commentsClicked)
         commentsButton.horizontalPadding = 9
-        commentsButton.toolTip = "Show or hide the comments panel (⌥⌘0)"
+        commentsButton.toolTip = "Show or hide comments and pull requests (⌥⌘0)"
         setCommentCount(0)
         projectButton.toolTip = "Project or worktree (⌘O opens another folder)"
         changesButton.toolTip = "What to review: the whole branch, uncommitted changes, or one commit"
@@ -57,6 +71,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     }
 
     @objc private func commentsClicked() { onToggleComments?() }
+    @objc private func leftClicked() { onToggleFiles?() }
     @objc private func contextClicked() { onOpenContext?() }
 
     /// The context button: a book icon, plus how many sources are on.
@@ -77,7 +92,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     /// The comments button: an icon, plus the open count when there is one.
     func setCommentCount(_ n: Int) {
         let s = NSMutableAttributedString()
-        if let icon = PickerButton.padded("text.bubble", left: 0, right: n > 0 ? 5 : 0, color: .secondaryLabelColor) {
+        if let icon = PickerButton.padded("sidebar.right", left: 0, right: n > 0 ? 5 : 0, pointSize: 12, color: .secondaryLabelColor) {
             let a = NSTextAttachment()
             a.image = icon
             a.bounds = NSRect(x: 0, y: -2, width: icon.size.width, height: icon.size.height)
@@ -102,7 +117,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         case .branch?: title = "All changes vs \(review?.base?.branch ?? "HEAD")"
         case .commit?: title = "Commit \(review?.base?.title ?? "")"
         case .pullRequest?:
-            let n = reviewChoice(repoRoot: repoPath).pr.map(Int.init)
+            let n = review?.choice.pr.map(Int.init)
             title = "PR #\(n ?? 0)" + (n.flatMap { GitHub.cached(repo: repoPath, number: $0) }.map { " · \($0.title)" } ?? "")
         case .uncommitted?: title = "Uncommitted changes"
         case nil: title = "Changes"
@@ -122,7 +137,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     // MARK: Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.projectID, .flexibleSpace, Self.changesID, Self.contextID, Self.commentsID]
+        [Self.leftToggleID, Self.projectID, .flexibleSpace, Self.changesID, Self.commentsID] // Context lives in Review → Context… (⌘K)
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -131,7 +146,10 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
 
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         let item = NSToolbarItem(itemIdentifier: id)
-        if id == Self.projectID {
+        if id == Self.leftToggleID {
+            leftToggle.heightAnchor.constraint(equalToConstant: CapsuleButton.height).isActive = true
+            item.view = leftToggle
+        } else if id == Self.projectID {
             item.view = projectButton
         } else if id == Self.changesID {
             item.view = changesButton
@@ -153,7 +171,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
             ])
             item.view = box
         }
-        item.label = id == Self.projectID ? "Project" : id == Self.changesID ? "Changes" : id == Self.contextID ? "Context" : "Comments"
+        item.label = id == Self.projectID ? "Project" : id == Self.changesID ? "Changes" : id == Self.leftToggleID ? "Files" : "Panel"
         item.isBordered = false // no system glass capsule around it: the button's own, shorter pill is the look
         return item
     }
@@ -189,7 +207,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     }
 
     private func buildChangesMenu(_ menu: NSMenu) {
-        let choice = reviewChoice(repoRoot: repoPath)
+        let choice = review?.choice ?? reviewChoice(repoRoot: repoPath)
         let base = review?.base
 
         add(to: menu, title: "All changes on this branch", action: #selector(pickBranchMode(_:)), object: nil, on: choice.mode == .branch)
@@ -211,7 +229,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
 
         menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "Pull requests"))
-        let openPR = add(to: menu, title: "Open Pull Request…", action: #selector(openPullRequest(_:)), object: nil)
+        let openPR = add(to: menu, title: "View Pull Request…", action: #selector(openPullRequest(_:)), object: nil)
         openPR.keyEquivalent = "p"
         openPR.keyEquivalentModifierMask = [.command, .shift]
         for pr in RecentPRs.list(repo: repoPath).prefix(5) {
@@ -264,7 +282,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     // MARK: Actions
 
     private func choose(_ change: (inout ReviewChoice) -> Void) {
-        var c = reviewChoice(repoRoot: repoPath)
+        guard var c = review?.choice else { return }
         change(&c)
         review?.setChoice(c)
         refreshTitles()
@@ -286,9 +304,11 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     var onOpenPullRequest: (() -> Void)?
     @objc func openPullRequest(_ sender: Any?) { onOpenPullRequest?() }
 
+    var onViewPullRequest: ((Int) -> Void)?
+
     @objc private func reopenPR(_ sender: NSMenuItem) {
         guard let n = sender.representedObject as? Int else { return }
-        review?.openPullRequest(n) { [weak self] _ in self?.refreshTitles() } // re-fetch: it may have new commits
+        onViewPullRequest?(n)
     }
 
     @objc private func openRepo(_ sender: NSMenuItem) {

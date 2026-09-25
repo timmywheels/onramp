@@ -70,6 +70,18 @@ enum MCPServer {
     list_comments to confirm nothing is left open.
     """
 
+    /// For agents helping review someone else's PR: read-only, answer in threads.
+    static func prAssistPrompt(pr: Int?) -> String {
+        """
+        I'm reviewing \(pr.map { "pull request #\($0)" } ?? "a commit") in pairprogram — someone else's code — and I want your help. \
+        The code as it stands in the PR is checked out in the current directory (read-only). First call get_review_context \
+        for the standards I care about. Then call list_comments: for each open comment, call claim_comment (skip any another \
+        agent claimed), investigate the code, and answer with reply_to_comment — findings, explanations, risks, a suggested \
+        change as a code snippet. Don't resolve comments (I decide), and don't edit files, commit or push: this isn't our \
+        code. Release (release_comment) any you can't help with.
+        """
+    }
+
     /// Tell the app an agent is connected: `<git-dir>/pairprogram/agent-<pid>.json`,
     /// removed when the session ends (the app also ignores files from dead processes).
     private static func announce(repoRoot: String, agent: String) -> String? {

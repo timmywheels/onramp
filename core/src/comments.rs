@@ -413,6 +413,15 @@ pub fn locate_threads(threads: Vec<Thread>, path: String, text: String, old_text
         .collect()
 }
 
+/// The file as the review shows it now: from the commit being reviewed (a PR
+/// or commit view), else the working tree.
+fn current_version(repo_root: &str, path: &str) -> String {
+    match crate::repo::review_base(repo_root.to_string()).ok().and_then(|b| b.target) {
+        Some(target) => crate::repo::texts_at(repo_root, &target, &[path.to_string()]).ok().and_then(|mut v| v.pop().flatten()).unwrap_or_default(),
+        None => fs::read_to_string(Path::new(repo_root).join(path)).unwrap_or_default(),
+    }
+}
+
 /// The file as it was at the review's base (what deleted-line comments point into).
 fn base_version(repo_root: &str, path: &str) -> String {
     let rev = crate::repo::review_base(repo_root.to_string()).map(|b| b.rev).unwrap_or_else(|_| "HEAD".into());
@@ -427,7 +436,7 @@ fn located_all(repo_root: &str, threads: Vec<Thread>) -> Vec<LocatedThread> {
     paths.sort();
     paths.dedup();
     for p in paths {
-        let text = fs::read_to_string(Path::new(repo_root).join(&p)).unwrap_or_default();
+        let text = current_version(repo_root, &p);
         let old = if threads.iter().any(|t| t.path == p && t.anchor.old_side) { base_version(repo_root, &p) } else { String::new() };
         out.extend(locate_threads(threads.clone(), p, text, old));
     }
@@ -487,7 +496,7 @@ pub fn export_markdown(repo_root: String, include_resolved: bool) -> Result<Stri
             None => md.push_str(&format!("## `{}` · {} (line changed since comment; was line {}){}\n\n", t.id, t.path, t.anchor.line + 1, status)),
         }
         // Code in context: the working tree, or the original for deleted lines.
-        let text = if t.anchor.old_side { base_version(&repo_root, &t.path) } else { fs::read_to_string(Path::new(&repo_root).join(&t.path)).unwrap_or_default() };
+        let text = if t.anchor.old_side { base_version(&repo_root, &t.path) } else { current_version(&repo_root, &t.path) };
         let lines = split_lines(&text);
         md.push_str("```\n");
         match l.line {

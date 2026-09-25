@@ -19,6 +19,12 @@ final class ReviewView: NSView, NSPopoverDelegate {
     private var agentChecks = 0
     /// What's being reviewed (see `reviewBase`); chosen in the toolbar's Changes menu.
     private(set) var base: ReviewBase?
+    /// This tab's choice (branch / uncommitted / commit / PR). Tabs on one repo can
+    /// differ; the front tab's is saved to the repo so agents and the CLI see it.
+    private(set) lazy var choice: ReviewChoice = reviewChoice(repoRoot: repoPath)
+
+    /// Save this tab's choice as the repo's (when it's the one in front).
+    func publishChoice() { try? setReviewChoice(repoRoot: repoPath, choice: choice) }
     /// Called after every reload, so the toolbar can show what's loaded.
     var onBaseChanged: ((ReviewBase?) -> Void)?
     private var statusParts: [(priority: Int, text: NSAttributedString)] = []
@@ -121,25 +127,33 @@ final class ReviewView: NSView, NSPopoverDelegate {
         var left: CGFloat = 10
         foldAllButton.frame = NSRect(x: left, y: round((h - 22) / 2), width: 22, height: 22)
         left = foldAllButton.frame.maxX + 8
-        progress.frame = NSRect(x: left, y: round((h - 6) / 2), width: 72, height: 6)
-        left = progress.frame.maxX + 8
         progressLabel.sizeToFit()
-        center(progressLabel, x: left)
-        left = progressLabel.frame.maxX + 18
+        // Narrow window: the right-hand buttons win; progress goes before it would overlap.
+        let fitsProgress = left + 72 + 8 + progressLabel.frame.width + 12 <= right
+        progress.isHidden = !fitsProgress
+        progressLabel.isHidden = !fitsProgress
+        if fitsProgress {
+            progress.frame = NSRect(x: left, y: round((h - 6) / 2), width: 72, height: 6)
+            left = progress.frame.maxX + 8
+            center(progressLabel, x: left)
+            left = progressLabel.frame.maxX + 18
+        }
         statusLabel.attributedStringValue = fittedStatus(width: right - 6 - left)
         statusLabel.sizeToFit()
         statusLabel.frame.size.width = max(0, min(statusLabel.frame.width, right - 6 - left))
+        statusLabel.isHidden = statusLabel.frame.width < 40
         center(statusLabel, x: left)
     }
 
     func reload() {
         let start = CACurrentMediaTime()
         do {
+            publishChoice() // the core reads the repo's saved choice
             let base = try reviewBase(repoRoot: repoPath)
             self.base = base
             document.baseRev = base.rev
             document.readOnly = base.target != nil // a commit or PR isn't on disk: nothing to edit
-            let pr = base.mode == .pullRequest ? reviewChoice(repoRoot: repoPath).pr.flatMap { GitHub.cached(repo: repoPath, number: Int($0)) } : nil
+            let pr = base.mode == .pullRequest ? choice.pr.flatMap { GitHub.cached(repo: repoPath, number: Int($0)) } : nil
             prBar.set(pr)
             prBar.isHidden = pr == nil
             needsLayout = true
@@ -235,7 +249,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
     var agentLabelForTests: String { agentButton.attributedTitle.string.trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "\u{2007}"))) + " [" + (agentButton.toolTip ?? "") + "]" }
 
     func setMode(_ mode: ReviewMode) {
-        try? setReviewMode(repoRoot: repoPath, mode: mode)
+        choice.mode = mode
         reload()
     }
 
@@ -245,11 +259,14 @@ final class ReviewView: NSView, NSPopoverDelegate {
         let repo = repoPath
         statusLabel.stringValue = "Fetching pull request #\(number)…"
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try GitHub.open(repo: repo, number: number) }
+            let result = Result { try GitHub.fetch(repo: repo, number: number) }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 switch result {
-                case .success:
+                case let .success(pr):
+                    self.choice.mode = .pullRequest
+                    self.choice.pr = UInt32(number)
+                    self.choice.baseBranch = "origin/" + pr.baseRefName
                     self.reload()
                     done(nil)
                 case let .failure(e):
@@ -263,7 +280,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
     /// Show something else (from the toolbar's Changes menu).
     func setChoice(_ choice: ReviewChoice) {
         guard document.dirtyCount == 0 else { return NSSound.beep() } // save first: switching drops editors
-        try? setReviewChoice(repoRoot: repoPath, choice: choice)
+        self.choice = choice
         reload()
     }
 
@@ -343,7 +360,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
     }
 
     @objc func showReview() {
-        let vc = ReviewSubmitViewController(pending: document.pendingCount, open: document.openCommentCount, repo: repoPath)
+        let vc = ReviewSubmitViewController(pending: document.pendingCount, open: document.openCommentCount, repo: repoPath, readOnly: document.readOnly)
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = vc
@@ -366,6 +383,12 @@ final class ReviewView: NSView, NSPopoverDelegate {
     /// Publish the review (and start the agent). Returns an error to show, or nil.
     @discardableResult
     func submit(body: String, verdict: Verdict, targets: [AgentRunner.Target]) -> String? {
+        // A PR / commit view: agents work read-only in a private checkout of it.
+        var checkout: String?
+        if document.readOnly, !targets.filter({ $0 != .none }).isEmpty {
+            do { checkout = try reviewCheckout(repoRoot: repoPath) } catch { return message(for: error) }
+        }
+        let pr = choice.pr.map(Int.init)
         do {
             _ = try submitReview(repoRoot: repoPath, author: document.reviewAuthor, body: body, verdict: verdict)
         } catch let CoreError.Io(message), let CoreError.Git(message) {
@@ -378,7 +401,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             let runner = runners[target] ?? AgentRunner()
             runner.onChange = { [weak self] in self?.updateAgents() }
             runners[target] = runner
-            runner.run(target, repo: repoPath)
+            runner.run(target, repo: repoPath, checkout: checkout, pr: pr)
         }
         updateAgents()
         return nil
