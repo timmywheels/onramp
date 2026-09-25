@@ -17,6 +17,7 @@ enum CLI {
     pairprogram claim <id>             claim a thread before working on it (other agents skip it)
     pairprogram release <id>           give a claimed thread back
     pairprogram extensions             list installed extensions and any problems loading them
+    pairprogram context                print the review context agents get (files you chose in the app)
     pairprogram prompt                 print instructions to paste into any agent
     pairprogram mcp                    run as an MCP server (stdio) for agents that speak MCP,
                                        e.g. `claude mcp add pairprogram -- pairprogram mcp`
@@ -24,7 +25,7 @@ enum CLI {
     Options: -C <dir> (repo, default: current dir)  --author <name> (default: $PAIRPROGRAM_AUTHOR or "agent")
     """
 
-    static let commands: Set<String> = ["comments", "reply", "resolve", "reopen", "claim", "release", "prompt", "extensions", "mcp", "help", "--help", "-h"]
+    static let commands: Set<String> = ["comments", "reply", "resolve", "reopen", "claim", "release", "prompt", "extensions", "context", "mcp", "help", "--help", "-h"]
 
     static func run(_ argv: [String]) -> Int32? {
         guard let command = argv.first, commands.contains(command) else { return nil }
@@ -40,6 +41,10 @@ enum CLI {
             switch command {
             case "help", "--help", "-h":
                 print(usage)
+            case "context":
+                let b = reviewContext(repoRoot: try repoRoot(dir), configDir: pairprogramConfigDir.path)
+                if b.files.isEmpty { print("No review context yet. Add files in the app: Review → Context… (⌘K)") } else { print(b.text) }
+                for s in b.skipped { FileHandle.standardError.write("skipped: \(s)\n".data(using: .utf8)!) }
             case "extensions":
                 let scan = MainActor.assumeIsolated { Extensions.scan() }
                 for e in scan.extensions {

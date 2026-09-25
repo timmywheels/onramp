@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var toolbar: SourceToolbar!
     private var commentsPanel = CommentsPanel()
     private var commentsItem: NSSplitViewItem?
+    private var contextWindow: ContextWindowController?
 
     init(repoPath: String) {
         self.repoPath = repoPath
@@ -16,6 +17,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = makeMainMenu()
+        // The Dock / ⌘-Tab icon (the binary isn't inside a .app, so set it here).
+        if let icon = Extensions.resource("AppIcon.icns").flatMap(NSImage.init(contentsOf:)) { NSApp.applicationIconImage = icon }
         Style.shared.start()
 
         window = NSWindow(
@@ -28,6 +31,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toolbar = SourceToolbar(repoPath: repoPath)
         toolbar.onOpenRepo = { [weak self] path in self?.open(repo: path) }
         toolbar.onToggleComments = { [weak self] in self?.toggleComments(nil) }
+        toolbar.onOpenContext = { [weak self] in self?.openContext(nil) }
+        toolbar.setContextCount(ContextWindowController.enabledCount(repo: repoPath))
         toolbar.install(in: window)
         RecentProjects.add(repoPath)
 
@@ -71,6 +76,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         window.setFrame(frame, display: true)
         toolbar.repoPath = path
         toolbar.review = reviewView
+        contextWindow?.close()
+        contextWindow = nil // per repo
+        toolbar.setContextCount(ContextWindowController.enabledCount(repo: path))
         reviewView.reload()
     }
 
@@ -112,6 +120,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.commentsPanel.update(items)
             self.toolbar.setCommentCount(items.filter { $0.status != .resolved }.count)
         }
+    }
+
+    @objc func openContext(_ sender: Any?) {
+        if contextWindow == nil {
+            let c = ContextWindowController(repo: repoPath)
+            c.onChange = { [weak self] n in self?.toolbar.setContextCount(n) }
+            contextWindow = c
+        }
+        contextWindow?.showWindow(nil)
+        contextWindow?.window?.center()
     }
 
     @objc func toggleComments(_ sender: Any?) {
@@ -249,6 +267,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         editItem.submenu = editMenu
         main.addItem(editItem)
 
+        let reviewItem = NSMenuItem()
+        let reviewMenu = NSMenu(title: "Review")
+        reviewMenu.addItem(withTitle: "Context…", action: #selector(openContext(_:)), keyEquivalent: "k")
+        reviewItem.submenu = reviewMenu
+
         let viewItem = NSMenuItem()
         let viewMenu = NSMenu(title: "View")
         viewMenu.delegate = self // rebuilds Appearance/Theme submenus with checkmarks
@@ -278,6 +301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toggle.keyEquivalentModifierMask = [.control, .command]
         viewItem.submenu = viewMenu
         main.addItem(viewItem)
+        main.addItem(reviewItem)
 
         return main
     }

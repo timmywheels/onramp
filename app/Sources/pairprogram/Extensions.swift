@@ -11,12 +11,15 @@ enum Extensions {
 
     /// Shipped inside the app's resource bundle (SwiftPM `resources: [.copy("Extensions")]`).
     /// Found next to the real executable, so the ~/.local/bin symlink works too.
-    static var builtinDir: URL? {
+    static var builtinDir: URL? { resource("Extensions") }
+
+    /// A file shipped in the app's resource bundle, if present.
+    static func resource(_ name: String) -> URL? {
         guard let exe = Bundle.main.executableURL?.resolvingSymlinksInPath() else { return nil }
         let bundle = exe.deletingLastPathComponent().appendingPathComponent("pairprogram_pairprogram.bundle")
         let root = Bundle(url: bundle)?.resourceURL ?? bundle
-        let dir = root.appendingPathComponent("Extensions")
-        return FileManager.default.fileExists(atPath: dir.path) ? dir : nil
+        let url = root.appendingPathComponent(name)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
     private(set) static var loaded: [Extension] = []

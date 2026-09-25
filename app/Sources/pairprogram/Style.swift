@@ -27,6 +27,11 @@ struct Settings: Codable, Equatable {
     }
 }
 
+/// ~/.config/pairprogram, or $PP_CONFIG_DIR (tests use a scratch folder).
+/// Outside `Style` so the CLI and MCP server (no main actor) can use it too.
+let pairprogramConfigDir = ProcessInfo.processInfo.environment["PP_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
+    ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/pairprogram")
+
 extension Notification.Name {
     static let styleChanged = Notification.Name("pairprogram.styleChanged")
 }
@@ -38,8 +43,7 @@ final class Style {
     static let shared = Style()
 
     /// ~/.config/pairprogram, or $PP_CONFIG_DIR (tests use a scratch folder).
-    static let configDir = ProcessInfo.processInfo.environment["PP_CONFIG_DIR"].map { URL(fileURLWithPath: $0) }
-        ?? FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/pairprogram")
+    static let configDir = pairprogramConfigDir
     static let settingsURL = configDir.appendingPathComponent("settings.json")
     static let themesDir = configDir.appendingPathComponent("themes")
     static let defaultFontFamily = "Lilex" // from the built-in lilex extension

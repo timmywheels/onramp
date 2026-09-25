@@ -57,6 +57,15 @@ built-in ones live in `app/Sources/pairprogram/Extensions/`; yours go in
 manifest already reserves what code extensions will need (`runtime =
 "process"` now, `"wasm"` later, and `permissions`); those aren't supported yet.
 
+## Review context
+
+**Review → Context…** (⌘K, or the 📚 toolbar button): files and folders agents read before working
+on your comments — review standards, architecture notes, a private checklist. Add them with the
+file picker or by dropping them in. Each is *This repo* (kept in `.git/pairprogram/`, never
+committed) or *All repos* (`~/.config/pairprogram/`). Folders include their text files; there are
+size limits so agents get guidance, not a dump. Agents get it via the `get_review_context` MCP
+tool; `pairprogram context` prints it.
+
 ## Connect your agent (opt-in, MCP)
 
 Click **Connect an agent…** in the status bar. It lists Claude Code, Codex and

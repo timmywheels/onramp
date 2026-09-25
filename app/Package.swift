@@ -9,7 +9,7 @@ let package = Package(
         .executableTarget(
             name: "pairprogram",
             dependencies: ["pairprogram_coreFFI"],
-            resources: [.copy("Extensions")] // built-in extensions (fonts, themes)
+            resources: [.copy("Extensions"), .copy("AppIcon.icns")] // built-in extensions (fonts, themes, languages), the app icon
         ),
     ]
 )

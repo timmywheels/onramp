@@ -36,7 +36,8 @@ final class AgentRunner {
         "mcp__plugin_pairprogram_pairprogram__resolve_comment", "mcp__plugin_pairprogram_pairprogram__claim_comment",
         "mcp__plugin_pairprogram_pairprogram__release_comment",
         "mcp__pairprogram__list_comments", "mcp__pairprogram__reply_to_comment", "mcp__pairprogram__resolve_comment",
-        "mcp__pairprogram__claim_comment", "mcp__pairprogram__release_comment",
+        "mcp__pairprogram__claim_comment", "mcp__pairprogram__release_comment", "mcp__pairprogram__get_review_context",
+        "mcp__plugin_pairprogram_pairprogram__get_review_context",
     ].joined(separator: ",")
 
     /// The shell command for a run. `resume`: the session to continue (the

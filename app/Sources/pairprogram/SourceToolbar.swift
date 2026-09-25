@@ -8,6 +8,10 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     private static let projectID = NSToolbarItem.Identifier("pairprogram.project")
     private static let changesID = NSToolbarItem.Identifier("pairprogram.changes")
     private static let commentsID = NSToolbarItem.Identifier("pairprogram.comments")
+    private static let contextID = NSToolbarItem.Identifier("pairprogram.context")
+    private let contextButton = CapsuleButton()
+    private lazy var contextWidth = contextButton.widthAnchor.constraint(equalToConstant: 32)
+    var onOpenContext: (() -> Void)?
     private let commentsButton = CapsuleButton()
     private lazy var commentsWidth = commentsButton.widthAnchor.constraint(equalToConstant: 32)
     var onToggleComments: (() -> Void)?
@@ -28,6 +32,11 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
             button.pickerMenu.delegate = self
             button.maxWidth = width
         }
+        contextButton.target = self
+        contextButton.action = #selector(contextClicked)
+        contextButton.horizontalPadding = 9
+        contextButton.toolTip = "Review context: files agents read before working on your comments (⌘K)"
+        setContextCount(0)
         commentsButton.target = self
         commentsButton.action = #selector(commentsClicked)
         commentsButton.horizontalPadding = 9
@@ -48,6 +57,22 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     }
 
     @objc private func commentsClicked() { onToggleComments?() }
+    @objc private func contextClicked() { onOpenContext?() }
+
+    /// The context button: a book icon, plus how many sources are on.
+    func setContextCount(_ n: Int) {
+        let s = NSMutableAttributedString()
+        if let icon = PickerButton.padded("books.vertical", left: 0, right: n > 0 ? 5 : 0, color: .secondaryLabelColor) {
+            let a = NSTextAttachment()
+            a.image = icon
+            a.bounds = NSRect(x: 0, y: -2, width: icon.size.width, height: icon.size.height)
+            s.append(NSAttributedString(attachment: a))
+        }
+        if n > 0 { s.append(NSAttributedString(string: "\(n)", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 11, weight: .medium)])) }
+        contextButton.attributedTitle = s
+        contextWidth.constant = ceil(contextButton.cell!.cellSize.width) + 2 * contextButton.horizontalPadding
+        contextWidth.isActive = true
+    }
 
     /// The comments button: an icon, plus the open count when there is one.
     func setCommentCount(_ n: Int) {
@@ -89,7 +114,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     // MARK: Toolbar
 
     func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [Self.projectID, .flexibleSpace, Self.changesID, Self.commentsID]
+        [Self.projectID, .flexibleSpace, Self.changesID, Self.contextID, Self.commentsID]
     }
 
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
@@ -102,6 +127,9 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
             item.view = projectButton
         } else if id == Self.changesID {
             item.view = changesButton
+        } else if id == Self.contextID {
+            contextButton.heightAnchor.constraint(equalToConstant: CapsuleButton.height).isActive = true
+            item.view = contextButton
         } else {
             // The toolbar leaves 8pt at the window's right edge; pad to 14 so the
             // gap there matches the gap above the pill.
@@ -117,7 +145,7 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
             ])
             item.view = box
         }
-        item.label = id == Self.projectID ? "Project" : id == Self.changesID ? "Changes" : "Comments"
+        item.label = id == Self.projectID ? "Project" : id == Self.changesID ? "Changes" : id == Self.contextID ? "Context" : "Comments"
         item.isBordered = false // no system glass capsule around it: the button's own, shorter pill is the look
         return item
     }

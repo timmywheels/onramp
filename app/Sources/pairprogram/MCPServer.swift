@@ -62,7 +62,8 @@ enum MCPServer {
     }
 
     static let addressPrompt = """
-    I reviewed your changes in pairprogram and left the comments below. For each open comment: \
+    I reviewed your changes in pairprogram and left the comments below. First call \
+    get_review_context: it has the standards and background I want you to follow. For each open comment: \
     call claim_comment first (skip any claimed by another agent), fix the code, then call \
     resolve_comment with a one-line note on what you changed. If a comment needs a decision from \
     me, call reply_to_comment with your question instead of resolving it. When you're done, call \
@@ -95,6 +96,7 @@ enum MCPServer {
 
     static let instructions = """
     The user reviews your code changes in pairprogram and leaves comments on specific lines.
+    Call get_review_context once first: files the user picked as review standards and background. \
     Call list_comments to see open comments with the code they refer to. Before working on one, \
     call claim_comment so other agents leave it alone (skip comments another agent has claimed). \
     Address each by editing the code, then call resolve_comment with a short note on what you \
@@ -117,6 +119,7 @@ enum MCPServer {
         tool("reopen_comment", "Reopen a resolved comment thread.", [
             "id": ["type": "string", "description": "Thread id."],
         ], required: ["id"]),
+        tool("get_review_context", "The user's review context: standards, guidelines and background files they chose. Read it before working on comments.", [:], required: []),
         tool("claim_comment", "Claim a comment thread before working on it, so other agents skip it. Fails if another agent has it.", [
             "id": ["type": "string", "description": "Thread id from list_comments."],
         ], required: ["id"]),
@@ -144,6 +147,12 @@ enum MCPServer {
         case "resolve_comment":
             let t = try setResolved(repoRoot: repoRoot, id: try arg("id"), resolved: true, author: author, note: args["note"] as? String)
             return "Resolved \(t.id)."
+        case "get_review_context":
+            let b = reviewContext(repoRoot: repoRoot, configDir: pairprogramConfigDir.path)
+            if b.files.isEmpty { return "The user hasn't added any review context." }
+            var out = "# Review context (\(b.files.count) file\(b.files.count == 1 ? "" : "s"))\n\n" + b.text
+            if !b.skipped.isEmpty { out += "\n(Skipped: " + b.skipped.joined(separator: ", ") + ")" }
+            return out
         case "claim_comment":
             let t = try claimThread(repoRoot: repoRoot, id: try arg("id"), agent: author)
             return "Claimed \(t.id): it's yours. Resolve it (or release_comment) when done."

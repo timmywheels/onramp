@@ -67,6 +67,7 @@ enum SelfTest {
                         log("\(title) menu, pass \(pass): \(String(format: "%.1f", (CACurrentMediaTime() - t0) * 1000)) ms")
                     }
                 }
+                log("app icon: \(Extensions.resource("AppIcon.icns")?.lastPathComponent ?? "MISSING"), \(Int(NSApp.applicationIconImage.size.width))pt, \(NSApp.applicationIconImage.representations.count) sizes")
                 let t0 = CACurrentMediaTime()
                 _ = Style.shared.monospaceFamilies
                 log("font list (cached now): \(String(format: "%.1f", (CACurrentMediaTime() - t0) * 1000)) ms")
@@ -82,6 +83,16 @@ enum SelfTest {
                 }
             }
             log("done")
+            return
+        }
+        if mode == "context" {
+            Task { @MainActor in
+                AppDelegate.current?.openContext(nil)
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if let w = NSApp.windows.first(where: { $0.title.hasPrefix("Review Context") }) { log("context window id \(w.windowNumber)") }
+                log("window id \(review.window!.windowNumber)")
+                log("ready")
+            }
             return
         }
         if mode == "panel" {

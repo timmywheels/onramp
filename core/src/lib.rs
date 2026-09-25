@@ -4,6 +4,7 @@
 //! re-exports what Swift sees through UniFFI.
 
 mod comments;
+mod context;
 mod diff;
 mod extensions;
 mod repo;
@@ -18,6 +19,7 @@ pub use repo::{
 pub use syntax::{grammar_names, highlight, highlight_names, language_name, set_languages, LanguageConfig};
 pub use review::{load_review, FileBody, FileDiff};
 pub use comments::*;
+pub use context::{context_sources, review_context, set_context_sources, ContextBundle, ContextFile, ContextScope, ContextSource};
 pub use extensions::{extension_api_version, scan_extensions, Extension, ExtensionProblem, ExtensionScan};
 
 uniffi::setup_scaffolding!();
