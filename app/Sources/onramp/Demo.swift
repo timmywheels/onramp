@@ -1,6 +1,6 @@
 import AppKit
 
-/// ONRAMP_DEMO=1: a hands-off tour for screen recordings (scripts/demo.sh).
+/// ONRAMP_DEMO=1: a hands-off tour for screen recordings (scripts/demo-big.sh).
 /// Waits for you to start recording, glides from the first file to the last,
 /// then jumps around through the file tree.
 @MainActor
