@@ -16,6 +16,8 @@ final class ReviewView: NSView, NSPopoverDelegate {
     private let reviewButton = CapsuleButton()
     /// Commit / push your branch (working-tree views only).
     private let gitButton = CapsuleButton()
+    /// "Update to 0.3.0" when a newer release is out (installed app only).
+    private let updateButton = CapsuleButton()
     private var gitStatus: BranchStatus?
     private var gitPopover: NSPopover?
     /// Agents with pairprogram set up (from each agent's CLI; checked in the background).
@@ -76,11 +78,15 @@ final class ReviewView: NSView, NSPopoverDelegate {
         foldAllButton.imagePosition = .imageOnly
         foldAllButton.target = self
         foldAllButton.action = #selector(toggleFoldAll)
+        updateButton.target = self
+        updateButton.action = #selector(updateClicked)
+        updateButton.isHidden = true
+        NotificationCenter.default.addObserver(self, selector: #selector(updaterChanged), name: .updaterChanged, object: nil)
         gitButton.target = self
         gitButton.action = #selector(gitClicked)
         gitButton.isHidden = true
         prBar.onMerge = { [weak self] in self?.showMerge() }
-        for v in [foldAllButton, progress, progressLabel, statusLabel, gitButton, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
+        for v in [foldAllButton, progress, progressLabel, statusLabel, updateButton, gitButton, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
         // Agents come and go (sessions start/end); poll cheaply.
         agentTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -126,7 +132,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             v.frame.origin = NSPoint(x: x, y: round((h - v.frame.height) / 2) + 0.5)
         }
         var right = bounds.width - 8 // 8pt all around: the capsule follows the window's corner
-        for v in [agentButton, reviewButton, gitButton] where !v.isHidden {
+        for v in [agentButton, reviewButton, gitButton, updateButton] where !v.isHidden {
             v.fit()
             right -= v.frame.width
             v.frame.origin = NSPoint(x: right, y: round((h - v.frame.height) / 2))
@@ -300,6 +306,37 @@ final class ReviewView: NSView, NSPopoverDelegate {
                     self.updateStatus()
                     done(message(for: e))
                 }
+            }
+        }
+    }
+
+    // MARK: Updates
+
+    @objc private func updaterChanged() {
+        let u = Updater.shared
+        let show = u.state == .available || u.state == .downloading || u.state == .installing
+        updateButton.isHidden = !show
+        if show {
+            let title = u.state == .available ? "Update to \(u.latest?.version ?? "")" : u.state == .downloading ? "Downloading…" : "Installing…"
+            updateButton.setText(title)
+            updateButton.contentTintColor = DiffStyle.accent
+            updateButton.toolTip = "PairProgram \(u.latest?.version ?? "") is available (you have \(u.currentVersion))"
+        }
+        needsLayout = true
+    }
+
+    @objc private func updateClicked() {
+        guard Updater.shared.state == .available, let latest = Updater.shared.latest, let window else { return }
+        let alert = NSAlert()
+        alert.messageText = "Install PairProgram \(latest.version) and relaunch?"
+        alert.informativeText = "You have \(Updater.shared.currentVersion). It takes a few seconds."
+        alert.addButton(withTitle: "Install and Relaunch")
+        alert.addButton(withTitle: "Release Notes")
+        alert.addButton(withTitle: "Later")
+        alert.beginSheetModal(for: window) { response in
+            MainActor.assumeIsolated {
+                if response == .alertFirstButtonReturn { Task { await Updater.shared.confirmedInstall() } }
+                if response == .alertSecondButtonReturn { NSWorkspace.shared.open(latest.pageURL) }
             }
         }
     }

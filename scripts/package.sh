@@ -69,6 +69,18 @@ step "Sign"
 codesign --force --options runtime --timestamp --sign "$IDENTITY" "$APP"
 codesign --verify --strict --deep --verbose=2 "$APP"
 
+# The app itself is notarized and stapled too: the in-app updater downloads
+# PairProgram.zip and checks it with Gatekeeper before installing.
+ZIP="$DIST/PairProgram.zip"
+if [ "$NOTARIZE" = 1 ]; then
+  step "Notarize the app (Apple, usually 1-5 minutes)"
+  ditto -c -k --keepParent "$APP" "$DIST/notarize.zip"
+  xcrun notarytool submit "$DIST/notarize.zip" --keychain-profile "$PROFILE" --wait
+  xcrun stapler staple "$APP"
+  rm -f "$DIST/notarize.zip"
+fi
+ditto -c -k --keepParent "$APP" "$ZIP"
+
 step "Make the DMG"
 STAGE="$DIST/dmg"
 mkdir -p "$STAGE/.background"
@@ -108,11 +120,11 @@ rm -f "$RW"
 codesign --force --timestamp --sign "$IDENTITY" "$DMG"
 
 if [ "$NOTARIZE" = 1 ]; then
-  step "Notarize (Apple, usually 1-5 minutes)"
+  step "Notarize the DMG"
   xcrun notarytool submit "$DMG" --keychain-profile "$PROFILE" --wait
   xcrun stapler staple "$DMG"
   step "Gatekeeper check"
   spctl --assess --type open --context context:primary-signature --verbose=2 "$DMG"
 fi
 rm -rf "$STAGE" "$DIST/dmg-background"
-step "Done: $DMG ($(du -h "$DMG" | cut -f1))"
+step "Done: $DMG ($(du -h "$DMG" | cut -f1)) and $ZIP ($(du -h "$ZIP" | cut -f1), for the updater)"

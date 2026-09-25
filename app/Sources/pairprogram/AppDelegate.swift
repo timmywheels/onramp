@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let icon = Extensions.resource("AppIcon.icns").flatMap(NSImage.init(contentsOf:)) { NSApp.applicationIconImage = icon }
         Style.shared.start()
         Installation.syncIntegrations()
+        Updater.shared.start()
         // `pair <repo>` while we're running: open it as a tab.
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(openFromCLI(_:)), name: CLI.openNotification, object: nil)
         // Self-tests run while you keep typing elsewhere: never steal focus.
@@ -91,6 +92,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func installCommandLineTool(_ sender: Any?) { Installation.installCommandLineTool() }
+    @objc func checkForUpdates(_ sender: Any?) { Updater.shared.checkInteractively() }
+
+    /// Any tab with unsaved edits (an update would drop them).
+    var hasUnsavedEdits: Bool { controllers.contains { $0.review.document.dirtyCount > 0 } }
 
     private func makeController(repoPath: String, first: Bool = false) -> ProjectWindowController {
         let c = ProjectWindowController(repoPath: repoPath, first: first)
@@ -230,6 +235,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let appItem = NSMenuItem()
         let appMenu = NSMenu()
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings(_:)), keyEquivalent: ",")
+        appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Install Command Line Tool…", action: #selector(installCommandLineTool(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Open Themes Folder", action: #selector(openThemes(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Open Extensions Folder", action: #selector(openExtensions(_:)), keyEquivalent: "")
