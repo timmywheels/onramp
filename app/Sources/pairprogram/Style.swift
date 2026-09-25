@@ -13,6 +13,11 @@ struct Settings: Codable, Equatable {
 
     static let defaultFontSize = 12.5
 
+    /// Built-in themes were "pairprogram Dark/Light" before the app became PairProgram.
+    static func renamed(_ theme: String) -> String {
+        ["pairprogram Dark": "PairProgram Dark", "pairprogram Light": "PairProgram Light"][theme] ?? theme
+    }
+
     init() {}
 
     init(from decoder: Decoder) throws {
@@ -20,8 +25,8 @@ struct Settings: Codable, Equatable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Settings()
         appearance = try c.decodeIfPresent(String.self, forKey: .appearance) ?? d.appearance
-        themeLight = try c.decodeIfPresent(String.self, forKey: .themeLight) ?? d.themeLight
-        themeDark = try c.decodeIfPresent(String.self, forKey: .themeDark) ?? d.themeDark
+        themeLight = Self.renamed(try c.decodeIfPresent(String.self, forKey: .themeLight) ?? d.themeLight)
+        themeDark = Self.renamed(try c.decodeIfPresent(String.self, forKey: .themeDark) ?? d.themeDark)
         fontFamily = try c.decodeIfPresent(String.self, forKey: .fontFamily) ?? d.fontFamily
         fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize) ?? d.fontSize
         fontLigatures = try c.decodeIfPresent(Bool.self, forKey: .fontLigatures) ?? d.fontLigatures

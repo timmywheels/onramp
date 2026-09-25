@@ -37,12 +37,12 @@ enum MCPServer {
             case "prompts/list":
                 respond(id, result: ["prompts": [[
                     "name": "address_comments",
-                    "description": "Work through the review comments left in pairprogram: fix, then resolve or reply.",
+                    "description": "Work through the review comments left in PairProgram: fix, then resolve or reply.",
                 ]]])
             case "prompts/get":
                 let md = (try? exportMarkdown(repoRoot: repoRoot, includeResolved: false)) ?? ""
                 respond(id, result: [
-                    "description": "Address pairprogram review comments",
+                    "description": "Address PairProgram review comments",
                     "messages": [["role": "user", "content": ["type": "text", "text": addressPrompt + "\n\n" + md]]],
                 ])
             case "tools/call":
@@ -62,7 +62,7 @@ enum MCPServer {
     }
 
     static let addressPrompt = """
-    I reviewed your changes in pairprogram and left the comments below. First call \
+    I reviewed your changes in PairProgram and left the comments below. First call \
     get_review_context: it has the standards and background I want you to follow. For each open comment: \
     call claim_comment first (skip any claimed by another agent), fix the code, then call \
     resolve_comment with a one-line note on what you changed. If a comment needs a decision from \
@@ -73,7 +73,7 @@ enum MCPServer {
     /// For agents helping review someone else's PR: read-only, answer in threads.
     static func prAssistPrompt(pr: Int?) -> String {
         """
-        I'm reviewing \(pr.map { "pull request #\($0)" } ?? "a commit") in pairprogram — someone else's code — and I want your help. \
+        I'm reviewing \(pr.map { "pull request #\($0)" } ?? "a commit") in PairProgram — someone else's code — and I want your help. \
         The code as it stands in the PR is checked out in the current directory (read-only). First call get_review_context \
         for the standards I care about. Then call list_comments: for each open comment, call claim_comment (skip any another \
         agent claimed), investigate the code, and answer with reply_to_comment — findings, explanations, risks, a suggested \
@@ -107,7 +107,7 @@ enum MCPServer {
     }
 
     static let instructions = """
-    The user reviews your code changes in pairprogram and leaves comments on specific lines.
+    The user reviews your code changes in PairProgram and leaves comments on specific lines.
     Call get_review_context once first: files the user picked as review standards and background. \
     Call list_comments to see open comments with the code they refer to. Before working on one, \
     call claim_comment so other agents leave it alone (skip comments another agent has claimed). \

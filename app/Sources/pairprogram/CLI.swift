@@ -1,26 +1,26 @@
 import Foundation
 
-/// `pairprogram <command>`: how agents (any agent) read and answer review
+/// `pair <command>`: how agents (any agent) read and answer review
 /// comments. Returns nil when the arguments mean "open the app".
 enum CLI {
     static let usage = """
-    pairprogram                        open the review for the current repo (returns right away)
-    pairprogram <path>                 open the review for the repo containing <path>
-    pairprogram --wait [path]          open it and wait until the window closes
+    pair                               open the review for the current repo (returns right away)
+    pair <path>                        open the review for the repo containing <path>
+    pair --wait [path]                 open it and wait until the window closes
 
-    pairprogram comments [--json] [--all]
+    pair comments [--json] [--all]
                                        print open comments (--all includes resolved)
-    pairprogram reply <id> <text>      add a reply to a comment thread
-    pairprogram resolve <id> [--note <text>]
+    pair reply <id> <text>             add a reply to a comment thread
+    pair resolve <id> [--note <text>]
                                        mark a thread resolved, optionally with a note
-    pairprogram reopen <id>            reopen a resolved thread
-    pairprogram claim <id>             claim a thread before working on it (other agents skip it)
-    pairprogram release <id>           give a claimed thread back
-    pairprogram extensions             list installed extensions and any problems loading them
-    pairprogram context                print the review context agents get (files you chose in the app)
-    pairprogram prompt                 print instructions to paste into any agent
-    pairprogram mcp                    run as an MCP server (stdio) for agents that speak MCP,
-                                       e.g. `claude mcp add pairprogram -- pairprogram mcp`
+    pair reopen <id>                   reopen a resolved thread
+    pair claim <id>                    claim a thread before working on it (other agents skip it)
+    pair release <id>                  give a claimed thread back
+    pair extensions                    list installed extensions and any problems loading them
+    pair context                       print the review context agents get (files you chose in the app)
+    pair prompt                        print instructions to paste into any agent
+    pair mcp                           run as an MCP server (stdio) for agents that speak MCP,
+                                       e.g. `claude mcp add pairprogram -- pair mcp`
 
     Options: -C <dir> (repo, default: current dir)  --author <name> (default: $PAIRPROGRAM_AUTHOR or "agent")
     """
@@ -67,15 +67,15 @@ enum CLI {
                 let root = try repoRoot(dir)
                 print(json ? try exportJson(repoRoot: root, includeResolved: all) : try exportMarkdown(repoRoot: root, includeResolved: all))
             case "reply":
-                guard args.count >= 2 else { return fail("usage: pairprogram reply <id> <text>") }
+                guard args.count >= 2 else { return fail("usage: pair reply <id> <text>") }
                 let t = try reply(repoRoot: try repoRoot(dir), id: args[0], author: author, body: args.dropFirst().joined(separator: " "), pending: false)
                 print("replied to \(t.id)")
             case "resolve", "reopen":
-                guard let id = args.first else { return fail("usage: pairprogram \(command) <id>") }
+                guard let id = args.first else { return fail("usage: pair \(command) <id>") }
                 let t = try setResolved(repoRoot: try repoRoot(dir), id: id, resolved: command == "resolve", author: author, note: note)
                 print("\(command == "resolve" ? "resolved" : "reopened") \(t.id)")
             case "claim", "release":
-                guard let id = args.first else { return fail("usage: pairprogram \(command) <id>") }
+                guard let id = args.first else { return fail("usage: pair \(command) <id>") }
                 let root = try repoRoot(dir)
                 let t = command == "claim" ? try claimThread(repoRoot: root, id: id, agent: author) : try releaseThread(repoRoot: root, id: id, agent: author)
                 print("\(command == "claim" ? "claimed" : "released") \(t.id)")
@@ -85,20 +85,20 @@ enum CLI {
             return 0
         } catch let error as CoreError {
             switch error {
-            case let .Git(message), let .Io(message): return fail("pairprogram: \(message)")
+            case let .Git(message), let .Io(message): return fail("pair: \(message)")
             }
         } catch {
-            return fail("pairprogram: \(error)")
+            return fail("pair: \(error)")
         }
     }
 
     static let prompt = """
-    I left review comments on your changes using pairprogram.
-    1. Run `pairprogram comments` to see every open comment, with the code it refers to.
+    I left review comments on your changes using PairProgram.
+    1. Run `pair comments` to see every open comment, with the code it refers to.
     2. Address each one by editing the code.
-    3. After fixing one, run `pairprogram resolve <id> --note "<what you changed>"`.
-       If you disagree or need a decision from me, run `pairprogram reply <id> "<question>"` instead of resolving.
-    4. When done, run `pairprogram comments` again to confirm nothing is left open.
+    3. After fixing one, run `pair resolve <id> --note "<what you changed>"`.
+       If you disagree or need a decision from me, run `pair reply <id> "<question>"` instead of resolving.
+    4. When done, run `pair comments` again to confirm nothing is left open.
     """
 
     enum Open { case run(repo: String), exit(Int32) }
@@ -110,7 +110,7 @@ enum CLI {
         let path = argv.first { !$0.hasPrefix("-") && $0 != "YES" && $0 != "NO" } ?? FileManager.default.currentDirectoryPath
         let root: String
         do { root = try repoRoot(URL(fileURLWithPath: path).standardizedFileURL.path) } catch {
-            FileHandle.standardError.write("pairprogram: not inside a git repository: \(path)\n".data(using: .utf8)!)
+            FileHandle.standardError.write("pair: not inside a git repository: \(path)\n".data(using: .utf8)!)
             return .exit(1)
         }
         let env = ProcessInfo.processInfo.environment
@@ -138,7 +138,7 @@ enum CLI {
         posix_spawnattr_destroy(&attr)
         posix_spawn_file_actions_destroy(&files)
         guard rc == 0 else { return .run(repo: root) } // couldn't detach: just run here
-        print("Opening pairprogram for \((root as NSString).lastPathComponent)")
+        print("Opening PairProgram for \((root as NSString).lastPathComponent)")
         return .exit(0)
     }
 

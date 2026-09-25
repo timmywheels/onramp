@@ -35,7 +35,7 @@ enum Extensions {
         let result = scan()
         loaded = result.extensions
         problems = result.problems
-        for p in problems { NSLog("pairprogram: extension %@: %@", p.dir, p.message) }
+        for p in problems { NSLog("PairProgram: extension %@: %@", p.dir, p.message) }
 
         let fonts = loaded.flatMap(\.fonts).filter { !registeredFonts.contains($0) }
         if !fonts.isEmpty {
@@ -49,7 +49,7 @@ enum Extensions {
             do {
                 return try JSONDecoder().decode(Theme.self, from: data)
             } catch {
-                NSLog("pairprogram: theme %@: %@", path, "\(error)")
+                NSLog("PairProgram: theme %@: %@", path, "\(error)")
                 return nil
             }
         }
