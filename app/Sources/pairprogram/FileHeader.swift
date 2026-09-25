@@ -69,7 +69,7 @@ enum FileHeader {
         func add(_ s: String, _ color: NSColor, _ font: NSFont = small) {
             details.append(NSAttributedString(string: s, attributes: [.font: font, .foregroundColor: color]))
         }
-        if case .text = file.kind {
+        if file.kind == .text || file.status == .deleted {
             add("+\(file.added)", .systemGreen, numbers)
             add("  −\(file.removed)", .systemRed, numbers)
         }
@@ -147,6 +147,8 @@ final class StickyHeaderView: NSView {
         let p = convert(event.locationInWindow, from: nil)
         if FileHeader.viewedRect(width: bounds.width).insetBy(dx: -8, dy: 0).contains(p) {
             doc.toggleViewed(fileIndex)
+        } else if event.modifierFlags.contains(.option) {
+            doc.setAllCollapsed(!doc.files[fileIndex].collapsed) // ⌥-click: all files follow this one
         } else {
             doc.toggleCollapse(fileIndex)
         }

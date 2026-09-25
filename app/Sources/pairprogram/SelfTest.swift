@@ -56,6 +56,26 @@ enum SelfTest {
             }
             return
         }
+        if mode == "bottom" {
+            // Scrolled all the way down, the last file must be the current one;
+            // jumping to it from the sidebar must put its header at the top.
+            Task { @MainActor in
+                let doc = review.document, clip = review.scrollView.contentView
+                let last = doc.files.count - 1
+                _ = frame(review.scrollView, to: doc.frame.height - clip.bounds.height)
+                log("at bottom: current \(doc.files[doc.index(at: clip.bounds.minY + FileLayout.headerHeight)].path) (last is \(doc.files[last].path))")
+                _ = frame(review.scrollView, to: 0)
+                doc.scrollToFile(last)
+                log("jump to last: viewport top \(clip.bounds.minY) file top \(doc.frame(ofFile: last).minY)")
+                doc.scrollToFile(3)
+                doc.setAllCollapsed(true)
+                log("collapse all: \(doc.files.filter(\.collapsed).count)/\(doc.files.count) collapsed, top file still \(doc.files[doc.index(at: clip.bounds.minY + 1)].path) (was \(doc.files[3].path))")
+                doc.setAllCollapsed(false)
+                log("expand all: \(doc.files.filter(\.collapsed).count) collapsed")
+                log("done")
+            }
+            return
+        }
         if mode == "sticky" {
             // The reported bug: with an editor open in a file, clicking its pinned header must fold it,
             // and clicking "Viewed" there must mark it (both used to go to the editor underneath).
@@ -91,7 +111,9 @@ enum SelfTest {
             Task { @MainActor in
                 let doc = review.document
                 if doc.files.count > 1, !doc.files[0].viewed, ProcessInfo.processInfo.environment["PP_NO_VIEW"] == nil { doc.toggleViewed(0) }
-                if doc.files.count > 1 { _ = frame(review.scrollView, to: doc.frame(ofFile: 1).minY + 140) }
+                if let target = ProcessInfo.processInfo.environment["PP_SCROLL_TO"], let i = doc.files.firstIndex(where: { $0.path == target }) {
+                    _ = frame(review.scrollView, to: max(0, doc.frame(ofFile: i).minY - 60))
+                } else if doc.files.count > 1 { _ = frame(review.scrollView, to: doc.frame(ofFile: 1).minY + 140) }
                 try? await Task.sleep(nanoseconds: 300_000_000)
                 if let w = review.window, let screen = w.screen {
                     let f = w.frame

@@ -8,6 +8,7 @@ final class ReviewView: NSView {
     private let statusBar = StatusBarView()
     private let statusLabel = NSTextField(labelWithString: "")
     private let progress = ProgressBarView()
+    private let foldAllButton = NSButton()
     private let progressLabel = NSTextField(labelWithString: "")
     private let agentButton = NSButton(title: "Connect an agent…", target: nil, action: nil)
     private let reviewButton = NSButton(title: "Review changes", target: nil, action: nil)
@@ -56,7 +57,11 @@ final class ReviewView: NSView {
         modeToggle.action = #selector(modeChanged)
         modeToggle.setToolTip("All changes on this branch, committed or not (like a pull request)", forSegment: 0)
         modeToggle.setToolTip("Only changes that aren't committed yet", forSegment: 1)
-        for v in [progress, progressLabel, statusLabel, modeToggle, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
+        foldAllButton.isBordered = false
+        foldAllButton.imagePosition = .imageOnly
+        foldAllButton.target = self
+        foldAllButton.action = #selector(toggleFoldAll)
+        for v in [foldAllButton, progress, progressLabel, statusLabel, modeToggle, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
         runner.onChange = { [weak self] in self?.updateAgents() }
         // Agents come and go (sessions start/end); poll cheaply.
         agentTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -100,7 +105,9 @@ final class ReviewView: NSView {
             center(v, x: right)
             right -= 12
         }
-        var left: CGFloat = 14
+        var left: CGFloat = 10
+        foldAllButton.frame = NSRect(x: left, y: round((h - 22) / 2), width: 22, height: 22)
+        left = foldAllButton.frame.maxX + 8
         progress.frame = NSRect(x: left, y: round((h - 6) / 2), width: 72, height: 6)
         left = progress.frame.maxX + 8
         progressLabel.sizeToFit()
@@ -140,6 +147,15 @@ final class ReviewView: NSView {
         let removed = document.files.reduce(0) { $0 + $1.removed }
         let dirty = document.dirtyCount
         let comments = document.openCommentCount
+        let collapseNext = document.anyExpanded
+        let symbol = collapseNext ? "rectangle.compress.vertical" : "rectangle.expand.vertical"
+        let tip = collapseNext ? "Collapse all files (⌥⌘←)" : "Expand all files (⌥⌘→)"
+        if foldAllButton.toolTip != tip {
+            let config = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+            foldAllButton.image = NSImage(systemSymbolName: symbol, accessibilityDescription: tip)?.withSymbolConfiguration(config)
+            foldAllButton.contentTintColor = .secondaryLabelColor
+            foldAllButton.toolTip = tip
+        }
         let count = document.files.count
         let viewed = document.viewedCount
         progress.fraction = count == 0 ? 0 : CGFloat(viewed) / CGFloat(count)
@@ -184,6 +200,10 @@ final class ReviewView: NSView {
             let drop = parts.indices.max { parts[$0].priority < parts[$1].priority }!
             parts.remove(at: drop)
         }
+    }
+
+    @objc func toggleFoldAll() {
+        document.setAllCollapsed(document.anyExpanded)
     }
 
     @objc private func modeChanged() {
@@ -430,13 +450,13 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     override func layout() {
         super.layout()
         let minHeight = superview?.bounds.height ?? 0
-        setFrameSize(NSSize(width: width, height: max(tops.last ?? 0, minHeight)))
+        setFrameSize(NSSize(width: width, height: contentHeight(minHeight)))
         let boxWidth = min(760, width - DiffStyle.gutterWidth - 5 - 24)
         if boxWidth != CommentMetrics.boxWidth { // comment heights depend on width
             CommentMetrics.boxWidth = boxWidth
             files.forEach { $0.invalidateLayout() }
             recomputeTops()
-            setFrameSize(NSSize(width: width, height: max(tops.last ?? 0, minHeight)))
+            setFrameSize(NSSize(width: width, height: contentHeight(minHeight)))
         }
         for (i, editor) in editors { positionEditor(editor, i) }
         followViewport()
@@ -494,6 +514,14 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     }
 
     /// Scroll so file `i`'s header is at the top.
+    /// The review's height plus room to scroll past the end until the last
+    /// file's header reaches the top (like Zed), so every file can be scrolled
+    /// to, jumped to from the sidebar, and becomes the current file.
+    private func contentHeight(_ viewportHeight: CGFloat) -> CGFloat {
+        guard !files.isEmpty else { return viewportHeight }
+        return max(tops.last ?? 0, tops[files.count - 1] + viewportHeight)
+    }
+
     func scrollToFile(_ i: Int) {
         guard let clip = superview as? NSClipView, i < files.count else { return }
         let maxY = max(0, frame.height - clip.bounds.height)
@@ -514,7 +542,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         recomputeTops()
         canvas.styleChanged()
         guard let clip = superview as? NSClipView, !files.isEmpty else { return needsLayout = true }
-        setFrameSize(NSSize(width: width, height: max(tops.last ?? 0, clip.bounds.height)))
+        setFrameSize(NSSize(width: width, height: contentHeight(clip.bounds.height)))
         clip.scroll(to: NSPoint(x: 0, y: tops[anchor] + into * (tops[anchor + 1] - tops[anchor])))
         (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
         needsLayout = true
@@ -610,6 +638,8 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         case .header:
             if FileHeader.viewedRect(width: width).insetBy(dx: -8, dy: 0).contains(CGPoint(x: x, y: FileLayout.headerHeight / 2)) {
                 toggleViewed(i)
+            } else if NSEvent.modifierFlags.contains(.option) {
+                setAllCollapsed(!file.collapsed) // ⌥-click: all files follow this one
             } else {
                 toggleCollapse(i)
             }
@@ -653,6 +683,31 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         canvas.needsDisplay = true
     }
 
+    // MARK: Fold all
+
+    var anyExpanded: Bool { files.contains { !$0.collapsed } }
+
+    /// Fold or unfold every file, keeping the file at the top of the viewport
+    /// in place. Files with unsaved edits stay open.
+    func setAllCollapsed(_ collapsed: Bool) {
+        guard !files.isEmpty else { return }
+        let anchor = index(at: viewport.minY + 1)
+        for (i, f) in files.enumerated() where f.collapsed != collapsed {
+            if collapsed, editors[i]?.isDirty == true { continue }
+            if collapsed { editors[i]?.host.removeFromSuperview(); editors[i] = nil }
+            f.collapsed = collapsed
+        }
+        recomputeTops()
+        if let clip = superview as? NSClipView {
+            setFrameSize(NSSize(width: width, height: contentHeight(clip.bounds.height)))
+            clip.scroll(to: NSPoint(x: 0, y: max(0, min(tops[anchor], frame.height - clip.bounds.height))))
+            (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
+        }
+        needsLayout = true
+        canvas.needsDisplay = true
+        onChange?()
+    }
+
     // MARK: Viewed
 
     /// Viewed if you marked it and it hasn't changed since.
@@ -687,7 +742,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         recomputeTops()
         // If the file's header had scrolled off the top (sticky header click), bring it back.
         if let clip = superview as? NSClipView, tops[i] < clip.bounds.minY {
-            setFrameSize(NSSize(width: width, height: max(tops.last ?? 0, clip.bounds.height)))
+            setFrameSize(NSSize(width: width, height: contentHeight(clip.bounds.height)))
             clip.scroll(to: NSPoint(x: 0, y: tops[i]))
             (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
         }
@@ -769,8 +824,8 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         editors = kept
         reloadThreads() // re-locate comments in the new text; recomputes tops
         if let clip = superview as? NSClipView, let p = anchorPath, let i = indexByPath[p] {
-            setFrameSize(NSSize(width: width, height: max(tops.last ?? 0, clip.bounds.height)))
-            clip.scroll(to: NSPoint(x: 0, y: max(0, min(tops[i] + anchorOffset, (tops.last ?? 0) - clip.bounds.height))))
+            setFrameSize(NSSize(width: width, height: contentHeight(clip.bounds.height)))
+            clip.scroll(to: NSPoint(x: 0, y: max(0, min(tops[i] + anchorOffset, frame.height - clip.bounds.height))))
             (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
         }
         needsLayout = true

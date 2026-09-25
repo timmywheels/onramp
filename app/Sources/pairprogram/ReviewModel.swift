@@ -121,10 +121,29 @@ final class ReviewFile {
     static let syntaxOff = ProcessInfo.processInfo.environment["PP_NO_SYNTAX"] != nil
 
     @MainActor func requestSyntax(_ done: @escaping @MainActor () -> Void) {
-        guard !syntaxRequested, kind == .text, !Self.syntaxOff else { return }
+        guard !syntaxRequested, !Self.syntaxOff else { return }
+        let deletedFile = if case .deleted = kind { true } else { false }
+        guard kind == .text || (deletedFile && !hunks.isEmpty) else { return }
         syntaxRequested = true
         let version = textVersion
         let needsOld = oldSyntax == nil && hunks.contains { !$0.deleted.isEmpty }
+        if !deletedFile { highlightNew(version, done) }
+        if needsOld {
+            Syntax.highlight(path: path, text: oldText, onlyIfOnScreen: true) { [weak self] result in
+                guard let self else { return }
+                switch result {
+                case .skipped: if deletedFile { self.syntaxRequested = false }
+                case .noLanguage: break
+                case let .spans(spans):
+                    self.oldSyntax = spans
+                    self.lineCache = [:]
+                    done()
+                }
+            }
+        }
+    }
+
+    @MainActor private func highlightNew(_ version: Int, _ done: @escaping @MainActor () -> Void) {
         Syntax.highlight(path: path, text: newText as String, onlyIfOnScreen: true) { [weak self] result in
             guard let self, self.textVersion == version else { return }
             switch result {
@@ -132,14 +151,6 @@ final class ReviewFile {
             case .noLanguage: break
             case let .spans(spans):
                 self.syntax = spans
-                self.lineCache = [:]
-                done()
-            }
-        }
-        if needsOld {
-            Syntax.highlight(path: path, text: oldText, onlyIfOnScreen: true) { [weak self] result in
-                guard let self, case let .spans(spans) = result else { return }
-                self.oldSyntax = spans
                 self.lineCache = [:]
                 done()
             }
@@ -176,8 +187,13 @@ final class ReviewFile {
         case let .text(old, new, hunks, _):
             kind = .text; oldText = old; newText = new as NSString; self.hunks = hunks
             lineStarts = Self.lineStarts(of: newText)
-        case let .deleted(n):
-            kind = .deleted(lines: Int(n)); oldText = ""; newText = ""; hunks = []
+        case let .deleted(old, n):
+            // The whole old file as one block of deleted lines, so it draws,
+            // highlights and takes comments like any other deletion.
+            kind = .deleted(lines: Int(n)); oldText = old; newText = ""
+            var lines = old.components(separatedBy: "\n")
+            if old.hasSuffix("\n") { lines.removeLast() }
+            hunks = old.isEmpty ? [] : [DiffHunk(newStart: 0, newLen: 0, oldStart: 0, deleted: lines)]
         case .binary:
             kind = .binary; oldText = ""; newText = ""; hunks = []
         case let .tooLarge(bytes):
@@ -310,7 +326,11 @@ struct FileLayout {
             case .text:
                 Self.addBody(file, add)
             case let .deleted(n):
-                add(.note("File deleted (\(n) lines)"), Self.noteHeight)
+                if file.hunks.isEmpty {
+                    add(.note(n == 0 ? "Empty file deleted" : "File deleted (\(n) lines; binary or too large to show)"), Self.noteHeight)
+                } else {
+                    Self.addDeletedBlock(file, 0, add)
+                }
             case .binary:
                 add(.note("Binary file"), Self.noteHeight)
             case let .tooLarge(bytes):
@@ -320,6 +340,14 @@ struct FileLayout {
         }
         self.rows = rows
         self.height = y
+    }
+
+    /// Hunk `h`'s deleted lines, then the comments on them.
+    private static func addDeletedBlock(_ file: ReviewFile, _ h: Int, _ add: (Row.Kind, CGFloat) -> Void, threads: [LocatedThread]? = nil) {
+        for k in file.hunks[h].deleted.indices { add(.deleted(hunk: h, index: k), DiffStyle.lineHeight) }
+        let threads = threads ?? file.visibleThreads.filter { file.placement($0) == .deletedBlock(h) }
+        for t in threads { add(.thread(t.thread.id), file.threadHeight(t)) }
+        if file.composerPlacement == .deletedBlock(h), let c = file.composer { add(.composer(c.line), CommentMetrics.composerRowHeight) }
     }
 
     private static func addBody(_ file: ReviewFile, _ add: (Row.Kind, CGFloat) -> Void) {
@@ -334,11 +362,7 @@ struct FileLayout {
             case .outdated: break
             }
         }
-        func addDeleted(_ h: Int) {
-            for k in file.hunks[h].deleted.indices { add(.deleted(hunk: h, index: k), DiffStyle.lineHeight) }
-            for t in threadsUnderBlock[h] ?? [] { add(.thread(t.thread.id), file.threadHeight(t)) }
-            if file.composerPlacement == .deletedBlock(h), let c = file.composer { add(.composer(c.line), CommentMetrics.composerRowHeight) }
-        }
+        func addDeleted(_ h: Int) { addDeletedBlock(file, h, add, threads: threadsUnderBlock[h] ?? []) }
         guard !ranges.isEmpty else { return }
         let L = DiffStyle.lineHeight
 

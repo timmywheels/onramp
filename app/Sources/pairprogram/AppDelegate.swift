@@ -103,6 +103,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         Style.shared.selectTheme(name)
     }
 
+    @objc func collapseAll(_ sender: Any?) { reviewView.document.setAllCollapsed(true) }
+    @objc func expandAll(_ sender: Any?) { reviewView.document.setAllCollapsed(false) }
+
     @objc func toggleResolved(_ sender: Any?) {
         reviewView.document.setShowResolved(!ReviewFile.showResolved)
     }
@@ -196,6 +199,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appearanceItem.submenu = NSMenu(title: "Appearance")
         let themeItem = viewMenu.addItem(withTitle: "Theme", action: nil, keyEquivalent: "")
         themeItem.submenu = NSMenu(title: "Theme")
+        viewMenu.addItem(.separator())
+        let collapse = viewMenu.addItem(withTitle: "Collapse All Files", action: #selector(collapseAll(_:)), keyEquivalent: String(UnicodeScalar(NSLeftArrowFunctionKey)!))
+        collapse.keyEquivalentModifierMask = [.option, .command]
+        let expand = viewMenu.addItem(withTitle: "Expand All Files", action: #selector(expandAll(_:)), keyEquivalent: String(UnicodeScalar(NSRightArrowFunctionKey)!))
+        expand.keyEquivalentModifierMask = [.option, .command]
         viewMenu.addItem(.separator())
         viewMenu.addItem(withTitle: "Show Resolved Comments", action: #selector(toggleResolved(_:)), keyEquivalent: "R")
         viewMenu.addItem(.separator())

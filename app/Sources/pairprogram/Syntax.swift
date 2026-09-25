@@ -67,6 +67,12 @@ enum Syntax {
         lock.lock(); onScreen = paths; lock.unlock()
     }
 
+    /// Mark one file on screen now: its job may start before the frame that
+    /// asked for it finishes and publishes the full set.
+    private static func markOnScreen(_ path: String) {
+        lock.lock(); onScreen.insert(path); lock.unlock()
+    }
+
     private static func isOnScreen(_ path: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return onScreen.contains(path)
@@ -77,6 +83,7 @@ enum Syntax {
     /// Highlight `text` as the file at `path`; `done` runs on the main thread.
     /// With `onlyIfOnScreen`, the job is skipped when the file scrolled away.
     static func highlight(path: String, text: String, onlyIfOnScreen: Bool = false, done: @escaping @MainActor (Result) -> Void) {
+        if onlyIfOnScreen { markOnScreen(path) }
         queue.addOperation {
             let result: Result
             if onlyIfOnScreen, !isOnScreen(path) {

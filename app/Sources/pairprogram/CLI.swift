@@ -43,6 +43,7 @@ enum CLI {
                 for e in scan.extensions {
                     var parts = [e.builtin ? "built-in" : "user"]
                     if !e.fonts.isEmpty { parts.append("\(e.fonts.count) font file\(e.fonts.count == 1 ? "" : "s")") }
+                    if !e.languages.isEmpty { parts.append("\(e.languages.count) language\(e.languages.count == 1 ? "" : "s")") }
                     if !e.themes.isEmpty { parts.append("\(e.themes.count) theme\(e.themes.count == 1 ? "" : "s")") }
                     print("\(e.id) \(e.version)  \(e.name)  (\(parts.joined(separator: ", ")))")
                 }

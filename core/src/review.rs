@@ -14,7 +14,9 @@ const MAX_FILE_BYTES: usize = 2_000_000;
 pub enum FileBody {
     /// Text on both sides (old is empty for new files).
     Text { old_text: String, new_text: String, hunks: Vec<DiffHunk>, new_line_count: u32 },
-    Deleted { old_line_count: u32 },
+    /// Removed from the working tree. `old_text` is empty when the old
+    /// version is binary or too large to show.
+    Deleted { old_text: String, old_line_count: u32 },
     Binary,
     TooLarge { bytes: u64 },
 }
@@ -36,7 +38,9 @@ fn line_count(s: &str) -> u32 {
 
 fn load_one(root: &Path, file: &ChangedFile, old: Option<String>) -> FileDiff {
     let body = if file.status == FileStatus::Deleted {
-        FileBody::Deleted { old_line_count: old.as_deref().map(line_count).unwrap_or(0) }
+        let old_line_count = old.as_deref().map(line_count).unwrap_or(0);
+        let old_text = old.filter(|t| t.len() <= MAX_FILE_BYTES && !t.contains('\0')).unwrap_or_default();
+        FileBody::Deleted { old_text, old_line_count }
     } else {
         match std::fs::read(root.join(&file.path)) {
             Ok(bytes) if bytes.len() > MAX_FILE_BYTES => FileBody::TooLarge { bytes: bytes.len() as u64 },
