@@ -470,14 +470,20 @@ enum CommentMarkdown {
             } else if let m = trimmed.range(of: #"^([-*+]|\d+[.)])\s+"#, options: .regularExpression) {
                 // Hanging indent: wrapped lines line up with the text, not the marker.
                 let marker = trimmed[m].trimmingCharacters(in: .whitespaces)
-                let bullet = marker.first!.isNumber ? marker : "•"
+                var rest = String(trimmed[m.upperBound...])
+                var bullet = marker.first!.isNumber ? marker : "•"
+                // GitHub task lists: "- [ ] todo" / "- [x] done"
+                if let box = rest.range(of: #"^\[( |x|X)\]\s*"#, options: .regularExpression) {
+                    bullet = rest[box].lowercased().contains("x") ? "☑" : "☐"
+                    rest = String(rest[box.upperBound...])
+                }
                 let indent = CGFloat(raw.prefix { $0 == " " }.count / 2) * 14
                 let prefix = bullet + "\u{00a0}"
                 let width = (prefix as NSString).size(withAttributes: [.font: font]).width + 2
                 para.firstLineHeadIndent = indent
                 para.headIndent = indent + width
                 para.tabStops = [NSTextTab(textAlignment: .left, location: indent + width)]
-                line = prefix + "\t" + trimmed[m.upperBound...]
+                line = prefix + "\t" + rest
             }
             out.append(inline(line + newline, font: lineFont, code: code, codeBackground: codeBackground, color: color, paragraph: para))
         }

@@ -32,6 +32,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         toolbar.onOpenRepo = { [weak self] path in self?.open(repo: path) }
         toolbar.onToggleComments = { [weak self] in self?.toggleComments(nil) }
         toolbar.onOpenContext = { [weak self] in self?.openContext(nil) }
+        toolbar.onOpenPullRequest = { [weak self] in self?.openPullRequest(nil) }
         toolbar.setContextCount(ContextWindowController.enabledCount(repo: repoPath))
         toolbar.install(in: window)
         RecentProjects.add(repoPath)
@@ -120,6 +121,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.commentsPanel.update(items)
             self.toolbar.setCommentCount(items.filter { $0.status != .resolved }.count)
         }
+    }
+
+    private var prPopover: NSPopover?
+
+    @objc func openPullRequest(_ sender: Any?) {
+        let picker = PullRequestPicker(repo: repoPath)
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.contentViewController = picker
+        picker.onOpen = { [weak self, weak popover] n, done in
+            self?.reviewView.openPullRequest(n) { error in
+                done(error)
+                if error == nil { popover?.close(); self?.toolbar.refreshTitles() }
+            }
+        }
+        prPopover = popover
+        if let anchor = toolbar.changesAnchor { popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY) }
     }
 
     @objc func openContext(_ sender: Any?) {
@@ -230,6 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func reloadReview(_ sender: Any?) {
+        let choice = reviewChoice(repoRoot: repoPath)
+        if choice.mode == .pullRequest, let n = choice.pr { return reviewView.openPullRequest(Int(n)) } // re-fetch: new commits
         reviewView.reload()
     }
 
@@ -269,6 +289,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let reviewItem = NSMenuItem()
         let reviewMenu = NSMenu(title: "Review")
+        let pr = reviewMenu.addItem(withTitle: "Open Pull Request…", action: #selector(openPullRequest(_:)), keyEquivalent: "p")
+        pr.keyEquivalentModifierMask = [.command, .shift]
         reviewMenu.addItem(withTitle: "Context…", action: #selector(openContext(_:)), keyEquivalent: "k")
         reviewItem.submenu = reviewMenu
 

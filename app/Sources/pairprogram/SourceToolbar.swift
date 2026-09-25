@@ -101,10 +101,18 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         switch review?.base?.mode {
         case .branch?: title = "All changes vs \(review?.base?.branch ?? "HEAD")"
         case .commit?: title = "Commit \(review?.base?.title ?? "")"
+        case .pullRequest?:
+            let n = reviewChoice(repoRoot: repoPath).pr.map(Int.init)
+            title = "PR #\(n ?? 0)" + (n.flatMap { GitHub.cached(repo: repoPath, number: $0) }.map { " · \($0.title)" } ?? "")
         case .uncommitted?: title = "Uncommitted changes"
         case nil: title = "Changes"
         }
-        setTitle(changesButton, symbol: review?.base?.mode == .commit ? "smallcircle.filled.circle" : "arrow.triangle.branch", title: title)
+        let symbol = switch review?.base?.mode {
+        case .commit?: "smallcircle.filled.circle"
+        case .pullRequest?: "arrow.triangle.pull"
+        default: "arrow.triangle.branch"
+        }
+        setTitle(changesButton, symbol: symbol, title: title)
     }
 
     private func setTitle(_ button: PickerButton, symbol: String, title: String) {
@@ -201,6 +209,17 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         add(to: menu, title: "Uncommitted changes", action: #selector(pickUncommitted(_:)), object: nil, on: choice.mode == .uncommitted)
             .toolTip = "Only what isn't committed yet"
 
+        menu.addItem(.separator())
+        menu.addItem(.sectionHeader(title: "Pull requests"))
+        let openPR = add(to: menu, title: "Open Pull Request…", action: #selector(openPullRequest(_:)), object: nil)
+        openPR.keyEquivalent = "p"
+        openPR.keyEquivalentModifierMask = [.command, .shift]
+        for pr in RecentPRs.list(repo: repoPath).prefix(5) {
+            let title = pr.title.count > 56 ? pr.title.prefix(55) + "…" : Substring(pr.title)
+            add(to: menu, title: "#\(pr.number)  \(title)", action: #selector(reopenPR(_:)), object: pr.number,
+                on: choice.mode == .pullRequest && choice.pr.map(Int.init) == pr.number)
+        }
+
         if let picked = try? reviewCommits(repoRoot: repoPath, limit: 40), !picked.commits.isEmpty {
             menu.addItem(.separator())
             menu.addItem(.sectionHeader(title: picked.onBranch ? "Commits on this branch" : "Recent commits"))
@@ -222,6 +241,9 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
         item.state = on ? .on : .off
         return item
     }
+
+    /// Where popovers about "what to review" point.
+    var changesAnchor: NSView? { changesButton.window == nil ? nil : changesButton }
 
     /// Button frames (self-tests).
     var debugFrames: String {
@@ -259,6 +281,14 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     @objc private func pickCommit(_ sender: NSMenuItem) {
         guard let sha = sender.representedObject as? String else { return }
         choose { $0.mode = .commit; $0.commit = sha }
+    }
+
+    var onOpenPullRequest: (() -> Void)?
+    @objc func openPullRequest(_ sender: Any?) { onOpenPullRequest?() }
+
+    @objc private func reopenPR(_ sender: NSMenuItem) {
+        guard let n = sender.representedObject as? Int else { return }
+        review?.openPullRequest(n) { [weak self] _ in self?.refreshTitles() } // re-fetch: it may have new commits
     }
 
     @objc private func openRepo(_ sender: NSMenuItem) {

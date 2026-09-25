@@ -16,6 +16,47 @@ let shape = NSBezierPath(roundedRect: body, xRadius: 185.4 * s, yRadius: 185.4 *
 let shadow = NSShadow(); shadow.shadowColor = NSColor.black.withAlphaComponent(0.28); shadow.shadowOffset = NSSize(width: 0, height: -10 * s); shadow.shadowBlurRadius = 24 * s
 NSGraphicsContext.saveGraphicsState(); shadow.set(); NSColor.black.setFill(); shape.fill(); NSGraphicsContext.restoreGraphicsState()
 let rose = NSColor(srgbRed: 244/255, green: 63/255, blue: 94/255, alpha: 1)
+if variant == "steel" {
+    // Black steel (Linear-like): graphite body, machined top rim, faint sheen, silver mark.
+    NSGradient(colors: [NSColor(srgbRed: 0.24, green: 0.245, blue: 0.26, alpha: 1), NSColor(srgbRed: 0.105, green: 0.108, blue: 0.118, alpha: 1),
+                        NSColor(srgbRed: 0.065, green: 0.066, blue: 0.072, alpha: 1)], atLocations: [0, 0.55, 1], colorSpace: .sRGB)!.draw(in: shape, angle: -90)
+    NSGraphicsContext.saveGraphicsState(); shape.addClip()
+    NSGradient(colors: [NSColor.white.withAlphaComponent(0.13), .clear])!.draw(in: body, angle: -55) // diagonal sheen
+    NSGraphicsContext.restoreGraphicsState()
+    // Rim: bright along the top, fading down the sides.
+    let rim = NSBezierPath(roundedRect: body.insetBy(dx: 1.5 * s, dy: 1.5 * s), xRadius: 184 * s, yRadius: 184 * s)
+    rim.lineWidth = 3 * s
+    NSGraphicsContext.saveGraphicsState()
+    rim.setClip()
+    let rimImage = NSImage(size: NSSize(width: px, height: px), flipped: false) { r in
+        NSGradient(colors: [NSColor.white.withAlphaComponent(0.8), NSColor.white.withAlphaComponent(0.12), NSColor.white.withAlphaComponent(0.04)],
+                   atLocations: [0, 0.3, 1], colorSpace: .sRGB)!.draw(in: r, angle: -90)
+        return true
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    NSGraphicsContext.saveGraphicsState()
+    let stroked = NSBezierPath(); stroked.append(rim)
+    ctx.cgContext.saveGState()
+    ctx.cgContext.addPath(rim.cgPath); ctx.cgContext.setLineWidth(3 * s); ctx.cgContext.replacePathWithStrokedPath(); ctx.cgContext.clip()
+    rimImage.draw(in: NSRect(x: 0, y: 0, width: px, height: px))
+    ctx.cgContext.restoreGState()
+    NSGraphicsContext.restoreGraphicsState()
+    // Silver mark: a vertical metal gradient masked by the glyph, with a soft shadow.
+    let target = 470 * s, scale = target / 355, side = 512 * scale
+    let glyphRect = NSRect(x: 512 * s - side / 2 + 2 * s, y: 512 * s - side / 2 + 4 * s, width: side, height: side)
+    let silver = NSImage(size: glyph.size, flipped: false) { r in
+        glyph.draw(in: r)
+        NSGraphicsContext.current?.compositingOperation = .sourceAtop
+        NSGradient(colors: [NSColor(white: 1.0, alpha: 1), NSColor(white: 0.90, alpha: 1), NSColor(white: 0.70, alpha: 1)],
+                   atLocations: [0, 0.5, 1], colorSpace: .sRGB)!.draw(in: r, angle: -90)
+        return true
+    }
+    let sh = NSShadow(); sh.shadowColor = NSColor.black.withAlphaComponent(0.5); sh.shadowOffset = NSSize(width: 0, height: -5 * s); sh.shadowBlurRadius = 12 * s
+    NSGraphicsContext.saveGraphicsState(); sh.set(); silver.draw(in: glyphRect); NSGraphicsContext.restoreGraphicsState()
+    NSGraphicsContext.restoreGraphicsState()
+    try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: a[2]))
+    exit(0)
+}
 let (top, bottom, mark): (NSColor, NSColor, NSColor) = variant == "rose"
     ? (NSColor(srgbRed: 1, green: 0.42, blue: 0.51, alpha: 1), NSColor(srgbRed: 0.86, green: 0.15, blue: 0.33, alpha: 1), .white)
     : (NSColor(srgbRed: 0.20, green: 0.21, blue: 0.24, alpha: 1), NSColor(srgbRed: 0.09, green: 0.09, blue: 0.11, alpha: 1), rose)

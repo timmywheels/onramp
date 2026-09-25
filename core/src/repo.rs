@@ -37,6 +37,9 @@ pub enum ReviewMode {
     Uncommitted,
     /// One commit: its parent vs the commit (read-only; not on disk).
     Commit,
+    /// A pull request, fetched to `refs/pairprogram/pr/<n>`: where it left its
+    /// base branch vs its head, like GitHub shows it (read-only).
+    PullRequest,
 }
 
 /// The saved choice: which mode, against which branch, or which commit.
@@ -51,6 +54,9 @@ pub struct ReviewChoice {
     /// Commit mode: the commit to show.
     #[serde(default)]
     pub commit: Option<String>,
+    /// Pull request mode: its number (base branch in `base_branch`, e.g. "origin/main").
+    #[serde(default)]
+    pub pr: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -86,7 +92,7 @@ pub fn review_choice(repo_root: String) -> ReviewChoice {
     // Before review.json there was a plain "mode" file.
     let legacy = dir.and_then(|d| std::fs::read_to_string(d.join("mode")).ok());
     let mode = if legacy.as_deref().map(str::trim) == Some("uncommitted") { ReviewMode::Uncommitted } else { ReviewMode::Branch };
-    ReviewChoice { mode, base_branch: None, commit: None }
+    ReviewChoice { mode, base_branch: None, commit: None, pr: None }
 }
 
 #[uniffi::export]
@@ -141,6 +147,15 @@ pub fn review_base(repo_root: String) -> Result<ReviewBase, CoreError> {
             let parent = stdout(git(&repo_root, &["rev-parse", "--verify", "-q", &format!("{sha}^")])?).unwrap_or_else(|| EMPTY_TREE.into());
             let title = stdout(git(&repo_root, &["log", "-1", "--format=%h %s", &sha])?);
             Ok(ReviewBase { mode: ReviewMode::Commit, rev: parent, target: Some(sha), branch: None, commits: 0, title })
+        }
+        ReviewMode::PullRequest => {
+            let (Some(n), Some(base_branch)) = (choice.pr, choice.base_branch.clone()) else { return Ok(head(ReviewMode::Uncommitted)) };
+            let Some(sha) = stdout(git(&repo_root, &["rev-parse", "--verify", "-q", &format!("{}^{{commit}}", pr_ref(n))])?) else {
+                return Err(CoreError::Git { message: format!("PR #{n} isn't fetched yet") });
+            };
+            let rev = stdout(git(&repo_root, &["merge-base", &sha, &base_branch])?).unwrap_or_else(|| EMPTY_TREE.into());
+            let commits = stdout(git(&repo_root, &["rev-list", "--count", &format!("{rev}..{sha}")])?).and_then(|n| n.parse().ok()).unwrap_or(0);
+            Ok(ReviewBase { mode: ReviewMode::PullRequest, rev, target: Some(sha), branch: Some(base_branch), commits, title: Some(format!("PR #{n}")) })
         }
         ReviewMode::Branch => {
             let chosen = match choice.base_branch {
@@ -214,7 +229,11 @@ pub struct CommitInfo {
 pub fn list_commits(repo_root: String, since: String, limit: u32) -> Result<Vec<CommitInfo>, CoreError> {
     let range = if since.is_empty() || since == "HEAD" { "HEAD".to_string() } else { format!("{since}..HEAD") };
     let out = git(&repo_root, &["log", &format!("-{limit}"), "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ct", &range])?;
-    Ok(String::from_utf8_lossy(&out.stdout)
+    Ok(parse_commits(&out.stdout))
+}
+
+fn parse_commits(out: &[u8]) -> Vec<CommitInfo> {
+    String::from_utf8_lossy(out)
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\u{1f}').collect();
@@ -226,7 +245,25 @@ pub fn list_commits(repo_root: String, since: String, limit: u32) -> Result<Vec<
                 time: f[4].parse().unwrap_or(0),
             })
         })
-        .collect())
+        .collect()
+}
+
+/// Where a fetched pull request's head lives (never a branch of yours).
+fn pr_ref(n: u32) -> String {
+    format!("refs/pairprogram/pr/{n}")
+}
+
+/// Fetch pull request `n` (head into `refs/pairprogram/pr/<n>`) and its base
+/// branch, from `remote`. Touches no branch, no working tree, no checkout.
+#[uniffi::export]
+pub fn fetch_pull_request(repo_root: String, remote: String, number: u32, base_branch: String) -> Result<(), CoreError> {
+    let head = format!("+refs/pull/{number}/head:{}", pr_ref(number));
+    let base = format!("+refs/heads/{base_branch}:refs/remotes/{remote}/{base_branch}");
+    let out = git(&repo_root, &["fetch", "--no-tags", "--quiet", &remote, &head, &base])?;
+    if !out.status.success() {
+        return Err(CoreError::Git { message: String::from_utf8_lossy(&out.stderr).trim().to_string() });
+    }
+    Ok(())
 }
 
 /// The commits a review picker offers: this branch's commits since it forked
@@ -235,6 +272,13 @@ pub fn list_commits(repo_root: String, since: String, limit: u32) -> Result<Vec<
 #[uniffi::export]
 pub fn review_commits(repo_root: String, limit: u32) -> Result<BranchCommits, CoreError> {
     let choice = review_choice(repo_root.clone());
+    if choice.mode == ReviewMode::PullRequest {
+        if let Ok(b) = review_base(repo_root.clone()) {
+            let range = format!("{}..{}", b.rev, b.target.clone().unwrap_or_default());
+            let out = git(&repo_root, &["log", &format!("-{limit}"), "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ct", &range])?;
+            return Ok(BranchCommits { commits: parse_commits(&out.stdout), on_branch: true });
+        }
+    }
     let base = match choice.base_branch {
         Some(b) if is_commit(&repo_root, &b)? => Some(b),
         _ => default_branch(&repo_root)?,
@@ -428,6 +472,49 @@ mod tests {
     }
 
     #[test]
+    fn pull_request_mode_fetches_and_diffs_like_github() {
+        let base = std::env::temp_dir().join(format!("pp-pr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (origin, author, me) = (base.join("origin.git"), base.join("author"), base.join("me"));
+        std::fs::create_dir_all(&author).unwrap();
+        let run = |dir: &std::path::Path, args: &[&str]| {
+            let out = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(dir).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run(&base, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+        // Someone's PR: main has a.txt; their branch changes it and adds b.txt.
+        run(&author, &["init", "-q", "-b", "main"]);
+        std::fs::write(author.join("a.txt"), "one\n").unwrap();
+        run(&author, &["add", "-A"]);
+        run(&author, &["commit", "-qm", "base"]);
+        run(&author, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        run(&author, &["push", "-q", "origin", "main"]);
+        run(&author, &["checkout", "-qb", "feature"]);
+        std::fs::write(author.join("a.txt"), "two\n").unwrap();
+        std::fs::write(author.join("b.txt"), "new\n").unwrap();
+        run(&author, &["add", "-A"]);
+        run(&author, &["commit", "-qm", "their change"]);
+        run(&author, &["push", "-q", "origin", "feature:refs/pull/7/head"]); // how GitHub exposes PRs
+        // Me: a clone on main with my own uncommitted work, which must stay untouched.
+        run(&base, &["clone", "-q", origin.to_str().unwrap(), me.to_str().unwrap()]);
+        std::fs::write(me.join("mine.txt"), "wip\n").unwrap();
+        let root = me.to_string_lossy().to_string();
+
+        fetch_pull_request(root.clone(), "origin".into(), 7, "main".into()).unwrap();
+        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::PullRequest, base_branch: Some("origin/main".into()), commit: None, pr: Some(7) }).unwrap();
+        let b = review_base(root.clone()).unwrap();
+        assert_eq!((b.mode, b.commits, b.title.as_deref()), (ReviewMode::PullRequest, 1, Some("PR #7")));
+        let diffs = crate::review::load_review(root.clone(), b.rev.clone(), b.target.clone()).unwrap();
+        assert_eq!(diffs.iter().map(|d| d.path.as_str()).collect::<Vec<_>>(), vec!["a.txt", "b.txt"]); // not mine.txt
+        assert_eq!(std::fs::read_to_string(me.join("a.txt")).unwrap(), "one\n"); // working tree untouched
+        let branch = Command::new("git").args(["branch", "--show-current"]).current_dir(&me).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&branch.stdout).trim(), "main");
+        let commits = review_commits(root.clone(), 10).unwrap();
+        assert_eq!(commits.commits.iter().map(|c| c.summary.as_str()).collect::<Vec<_>>(), vec!["their change"]);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn branch_mode_keeps_committed_changes() {
         let dir = std::env::temp_dir().join(format!("pp-branch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -467,14 +554,14 @@ mod tests {
         assert_eq!((trees.len(), trees[0].branch.as_deref(), trees[0].is_current), (1, Some("feature"), true));
 
         // One commit: parent → commit, from git, not the working tree.
-        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::Commit, base_branch: None, commit: Some(commits[0].short.clone()) }).unwrap();
+        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::Commit, base_branch: None, commit: Some(commits[0].short.clone()), pr: None }).unwrap();
         let one = review_base(root.clone()).unwrap();
         assert_eq!((one.mode, one.target.as_deref(), one.title.as_deref().map(|t| t.ends_with(" work"))), (ReviewMode::Commit, Some(commits[0].sha.as_str()), Some(true)));
         let diffs = crate::review::load_review(root.clone(), one.rev.clone(), one.target.clone()).unwrap();
         assert_eq!(diffs.iter().map(|d| d.path.as_str()).collect::<Vec<_>>(), vec!["a.txt", "gone.txt", "new.txt"]); // no loose.txt
 
         // A chosen base branch that doesn't exist falls back to the default.
-        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::Branch, base_branch: Some("nope".into()), commit: None }).unwrap();
+        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::Branch, base_branch: Some("nope".into()), commit: None, pr: None }).unwrap();
         assert_eq!(review_base(root.clone()).unwrap().branch.as_deref(), Some("main"));
 
         set_review_mode(root.clone(), ReviewMode::Uncommitted).unwrap();

@@ -85,6 +85,30 @@ enum SelfTest {
             log("done")
             return
         }
+        if mode == "pr" {
+            Task { @MainActor in
+                let repo = review.document.repoRootForTests
+                let open = (try? GitHub.list(repo: repo, filter: .open)) ?? []
+                log("picker: \(open.count) open PRs, first: #\(open.first?.number ?? 0) \(open.first?.title ?? "")")
+                let n = Int(ProcessInfo.processInfo.environment["PP_PR"] ?? "149")!
+                review.openPullRequest(n) { error in
+                    MainActor.assumeIsolated {
+                        if let error { log("error: \(error)"); log("ready"); return }
+                        let doc = review.document
+                        log("PR #\(n): \(doc.files.map(\.path).joined(separator: ", ")) · \(review.statusText)")
+                        log("toolbar: \(AppDelegate.current?.sourceToolbar.debugMenus().titles.1 ?? "?")")
+                        log("editor refused: \(doc.activateEditor(0, offset: 0) == nil)")
+                        review.expandPullRequestBarForTests()
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 700_000_000)
+                            log("window id \(review.window!.windowNumber)")
+                            log("ready")
+                        }
+                    }
+                }
+            }
+            return
+        }
         if mode == "context" {
             Task { @MainActor in
                 AppDelegate.current?.openContext(nil)

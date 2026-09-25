@@ -6,6 +6,8 @@ final class ReviewView: NSView, NSPopoverDelegate {
     let scrollView = NSScrollView()
     let document: ReviewDocumentView
     private let statusBar = StatusBarView()
+    /// Title, author and description while reviewing a pull request.
+    private let prBar = PullRequestBar()
     private let statusLabel = NSTextField(labelWithString: "")
     private let progress = ProgressBarView()
     private let foldAllButton = NSButton()
@@ -47,6 +49,9 @@ final class ReviewView: NSView, NSPopoverDelegate {
         addSubview(scrollView)
 
         addSubview(statusBar)
+        prBar.isHidden = true
+        prBar.onToggle = { [weak self] in self?.needsLayout = true }
+        addSubview(prBar)
         statusLabel.lineBreakMode = .byTruncatingTail
         statusLabel.cell?.truncatesLastVisibleLine = true
         progressLabel.font = .monospacedDigitSystemFont(ofSize: 11.5, weight: .medium)
@@ -95,7 +100,9 @@ final class ReviewView: NSView, NSPopoverDelegate {
         super.layout()
         let h = StatusBarView.height
         statusBar.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
-        scrollView.frame = NSRect(x: 0, y: h, width: bounds.width, height: bounds.height - h)
+        let barHeight = prBar.isHidden ? 0 : prBar.height(max: (bounds.height - h) * 0.45)
+        prBar.frame = NSRect(x: 0, y: bounds.height - barHeight, width: bounds.width, height: barHeight)
+        scrollView.frame = NSRect(x: 0, y: h, width: bounds.width, height: bounds.height - h - barHeight)
         document.width = scrollView.contentSize.width
         DiffStyle.paintWidth = document.width
 
@@ -131,7 +138,11 @@ final class ReviewView: NSView, NSPopoverDelegate {
             let base = try reviewBase(repoRoot: repoPath)
             self.base = base
             document.baseRev = base.rev
-            document.readOnly = base.target != nil // a commit isn't on disk: nothing to edit
+            document.readOnly = base.target != nil // a commit or PR isn't on disk: nothing to edit
+            let pr = base.mode == .pullRequest ? reviewChoice(repoRoot: repoPath).pr.flatMap { GitHub.cached(repo: repoPath, number: Int($0)) } : nil
+            prBar.set(pr)
+            prBar.isHidden = pr == nil
+            needsLayout = true
             document.setFiles(TreeOrder.sorted(try loadReview(repoRoot: repoPath, baseRev: base.rev, target: base.target).map(ReviewFile.init)))
             onBaseChanged?(base)
         } catch {
@@ -186,6 +197,9 @@ final class ReviewView: NSView, NSPopoverDelegate {
             if let n = base?.commits, n > 0 { parts.append((4, part([("\(n) commit\(n == 1 ? "" : "s")", .secondaryLabelColor, font)]))) }
         case .commit?:
             parts.append((2, part([("one commit · read-only", .secondaryLabelColor, font)])))
+        case .pullRequest?:
+            parts.append((2, part([("pull request vs \(base?.branch ?? "base") · read-only", .secondaryLabelColor, font)])))
+            if let n = base?.commits, n > 0 { parts.append((4, part([("\(n) commit\(n == 1 ? "" : "s")", .secondaryLabelColor, font)]))) }
         default:
             parts.append((2, part([("uncommitted changes", .secondaryLabelColor, font)])))
         }
@@ -217,11 +231,33 @@ final class ReviewView: NSView, NSPopoverDelegate {
     }
 
     func clickAgentForTests() { agentButtonClicked() }
+    func expandPullRequestBarForTests() { if !prBar.expanded { prBar.mouseDown(with: NSEvent.mouseEvent(with: .leftMouseDown, location: prBar.convert(NSPoint(x: 20, y: 10), to: nil), modifierFlags: [], timestamp: 0, windowNumber: window?.windowNumber ?? 0, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!) } }
     var agentLabelForTests: String { agentButton.attributedTitle.string.trimmingCharacters(in: .whitespaces.union(CharacterSet(charactersIn: "\u{2007}"))) + " [" + (agentButton.toolTip ?? "") + "]" }
 
     func setMode(_ mode: ReviewMode) {
         try? setReviewMode(repoRoot: repoPath, mode: mode)
         reload()
+    }
+
+    /// Fetch a pull request (read-only) and review it. `done` gets an error to show, or nil.
+    func openPullRequest(_ number: Int, done: @escaping (String?) -> Void = { _ in }) {
+        guard document.dirtyCount == 0 else { return done("Save your edits first (⌘S).") }
+        let repo = repoPath
+        statusLabel.stringValue = "Fetching pull request #\(number)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try GitHub.open(repo: repo, number: number) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                switch result {
+                case .success:
+                    self.reload()
+                    done(nil)
+                case let .failure(e):
+                    self.updateStatus()
+                    done(message(for: e))
+                }
+            }
+        }
     }
 
     /// Show something else (from the toolbar's Changes menu).
@@ -1246,4 +1282,10 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         }
         canvas.needsDisplay = true
     }
+}
+
+/// A user-facing message for errors from the core or gh.
+func message(for error: Error) -> String {
+    if let e = error as? CoreError { switch e { case let .Git(m), let .Io(m): return m } }
+    return "\(error)"
 }

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Builds the app icon (AppIcon.icns) from design/icon.svg.
-#   ./scripts/make-icon.sh          # rose background, white mark (default)
+#   ./scripts/make-icon.sh          # black steel, silver mark (default, Linear-like)
+#   ./scripts/make-icon.sh rose     # rose background, white mark
 #   ./scripts/make-icon.sh dark     # graphite background, rose mark
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-VARIANT="${1:-rose}"
+VARIANT="${1:-steel}"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 swiftc -O "$ROOT/scripts/make-icon.swift" -o "$TMP/make-icon" 2>/dev/null
