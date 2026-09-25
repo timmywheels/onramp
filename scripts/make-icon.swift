@@ -43,5 +43,33 @@ NSGraphicsContext.saveGraphicsState(); tri.addClip() // gloss on the top edge
 NSGradient(colors: [NSColor.white.withAlphaComponent(0.28), NSColor.white.withAlphaComponent(0)])!.draw(in: NSRect(x: 0, y: top - 240 * s, width: px, height: 240 * s), angle: -90)
 NSGraphicsContext.restoreGraphicsState()
 
+// Like a real yield sign: a thin white rim, and a white triangle about half the size, sitting a little high.
+let env = ProcessInfo.processInfo.environment
+func scaled(_ k: CGFloat, about c: NSPoint, radius: CGFloat) -> NSBezierPath {
+    let q = pts.map { NSPoint(x: c.x + ($0.x - c.x) * k, y: c.y + ($0.y - c.y) * k) }
+    let p = NSBezierPath()
+    p.move(to: NSPoint(x: (q[0].x + q[1].x) / 2, y: q[0].y))
+    for i in [1, 2, 0] { p.appendArc(from: q[i], to: q[(i + 1) % 3], radius: radius * s) }
+    p.close()
+    return p
+}
+if env["ICON_RIM"] != "0" { // the white border is the sign's own edge, as on the real thing
+    NSGraphicsContext.saveGraphicsState()
+    tri.addClip()
+    tri.lineWidth = 2 * CGFloat(Double(env["ICON_RIM_W"] ?? "12") ?? 12) * s // half of it falls outside the clip
+    NSColor(white: 0.97, alpha: 1).setStroke()
+    tri.stroke()
+    NSGraphicsContext.restoreGraphicsState()
+}
+let innerScale = CGFloat(Double(env["ICON_INNER"] ?? "0.5") ?? 0.5)
+if innerScale > 0 {
+    let inner = scaled(innerScale, about: NSPoint(x: cx, y: CGFloat(Double(env["ICON_INNER_Y"] ?? "588") ?? 588) * s), radius: 22)
+    NSGraphicsContext.saveGraphicsState()
+    let sh = NSShadow(); sh.shadowColor = NSColor.black.withAlphaComponent(0.25); sh.shadowOffset = NSSize(width: 0, height: -2 * s); sh.shadowBlurRadius = 4 * s
+    sh.set()
+    NSGradient(starting: NSColor(white: 1, alpha: 1), ending: NSColor(white: 0.9, alpha: 1))!.draw(in: inner, angle: -90)
+    NSGraphicsContext.restoreGraphicsState()
+}
+
 NSGraphicsContext.restoreGraphicsState()
 try! rep.representation(using: .png, properties: [:])!.write(to: URL(fileURLWithPath: a[1]))
