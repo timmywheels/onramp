@@ -190,6 +190,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
         document.watchWorkingTree()
         updateStatus()
         SelfTest.run(review: self)
+        Demo.run(review: self)
     }
 
     private func updateStatus() {

@@ -33,6 +33,7 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
 
     func start() {
         let env = ProcessInfo.processInfo.environment
+        if Demo.isOn { return } // the installed app may already have one
         if let mode = env["ONRAMP_SELFTEST"] { if mode == "menubar" { runSelfTest() }; return } // tests don't touch your menu bar
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: .styleChanged, object: nil)
         settingsChanged()
