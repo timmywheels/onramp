@@ -217,6 +217,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc func toggleLigatures(_ sender: Any?) { Style.shared.update { $0.fontLigatures.toggle() } }
+    @objc func toggleFollow(_ sender: Any?) { front?.review.toggleFollow() }
     @objc func toggleMenuBar(_ sender: Any?) { Style.shared.update { $0.menuBar.toggle() } }
 
     @objc func zoomIn(_ sender: Any?) { Style.shared.update { $0.fontSize = min(32, $0.fontSize + 1) } }
@@ -247,6 +248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.item(withTitle: "Font Ligatures")?.state = style.settings.fontLigatures ? .on : .off
         menu.item(withTitle: "Show Agents in Menu Bar")?.state = style.settings.menuBar ? .on : .off
+        menu.item(withTitle: "Follow Agent")?.state = front?.review.document.following == true ? .on : .off
         if let fonts = menu.item(withTitle: "Font")?.submenu {
             fonts.removeAllItems()
             for (i, family) in style.monospaceFamilies.enumerated() {
@@ -340,6 +342,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         comments.keyEquivalentModifierMask = [.option, .command]
         viewMenu.addItem(withTitle: "Show Resolved Comments", action: #selector(toggleResolved(_:)), keyEquivalent: "R")
         viewMenu.addItem(withTitle: "Show Agents in Menu Bar", action: #selector(toggleMenuBar(_:)), keyEquivalent: "")
+        let follow = viewMenu.addItem(withTitle: "Follow Agent", action: #selector(toggleFollow(_:)), keyEquivalent: "f")
+        follow.keyEquivalentModifierMask = [.option, .command]
         viewMenu.addItem(.separator())
         let c1 = viewMenu.addItem(withTitle: "Comments", action: #selector(showComments(_:)), keyEquivalent: "1")
         c1.keyEquivalentModifierMask = [.option, .command]

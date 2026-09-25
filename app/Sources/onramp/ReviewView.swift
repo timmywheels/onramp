@@ -14,6 +14,9 @@ final class ReviewView: NSView, NSPopoverDelegate {
     private let progressLabel = NSTextField(labelWithString: "")
     private let agentButton = AgentButton()
     private let reviewButton = CapsuleButton()
+    /// "Follow" while an agent works: keep its edits in view (Zed-style).
+    private let followButton = CapsuleButton()
+    private var scrollMonitor: Any?
     /// Commit / push your branch (working-tree views only).
     private let gitButton = CapsuleButton()
     /// "Update to 0.3.0" when a newer release is out (installed app only).
@@ -71,6 +74,18 @@ final class ReviewView: NSView, NSPopoverDelegate {
         progress.toolTip = "Files marked Viewed"
         agentButton.target = self
         agentButton.action = #selector(agentButtonClicked)
+        followButton.setText("Follow")
+        followButton.target = self
+        followButton.action = #selector(toggleFollow)
+        followButton.toolTip = "Follow the agent: jump to what it's editing as it goes (⌥⌘F). Scroll to stop."
+        followButton.isHidden = true
+        document.onFollowChanged = { [weak self] _ in self?.updateFollowButton() }
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+            // You scrolled: you're driving now.
+            if let self, self.document.following, event.window === self.window,
+               self.scrollView.frame.contains(self.convert(event.locationInWindow, from: nil)) { self.document.following = false }
+            return event
+        }
         reviewButton.setText("Review changes")
         reviewButton.target = self
         reviewButton.action = #selector(showReview)
@@ -86,7 +101,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
         gitButton.action = #selector(gitClicked)
         gitButton.isHidden = true
         prBar.onMerge = { [weak self] in self?.showMerge() }
-        for v in [foldAllButton, progress, progressLabel, statusLabel, updateButton, gitButton, reviewButton, agentButton] as [NSView] { statusBar.addSubview(v) }
+        for v in [foldAllButton, progress, progressLabel, statusLabel, updateButton, gitButton, reviewButton, followButton, agentButton] as [NSView] { statusBar.addSubview(v) }
         // Agents come and go (sessions start/end); poll cheaply.
         agentTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -141,7 +156,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             v.frame.origin = NSPoint(x: x, y: round((h - v.frame.height) / 2) + 0.5)
         }
         var right = bounds.width - 8 // 8pt all around: the capsule follows the window's corner
-        for v in [agentButton, reviewButton, gitButton, updateButton] where !v.isHidden {
+        for v in [agentButton, followButton, reviewButton, gitButton, updateButton] where !v.isHidden {
             v.fit()
             right -= v.frame.width
             v.frame.origin = NSPoint(x: right, y: round((h - v.frame.height) / 2))
@@ -298,6 +313,24 @@ final class ReviewView: NSView, NSPopoverDelegate {
     }
 
     /// Fetch a pull request (read-only) and review it. `done` gets an error to show, or nil.
+    @objc func toggleFollow() { document.following.toggle(); followSawWork = false }
+    private var followSawWork = false
+
+    /// Shown while an agent works (or while you're following); lit while following.
+    private func updateFollowButton() {
+        let working = agentButton.isWorking
+        let show = working || document.following
+        if followButton.isHidden == show { followButton.isHidden = !show; needsLayout = true }
+        let title = document.following ? "Following" : "Follow"
+        if followButton.title != title { followButton.setText(title); needsLayout = true }
+        followButton.contentTintColor = document.following ? DiffStyle.accent : nil
+        followButton.image = NSImage(systemSymbolName: document.following ? "eye.fill" : "eye", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
+        // Stop following once the work you were watching is done (not before any has started).
+        if working || QuickSend.anyRunning { followSawWork = true }
+        else if document.following, followSawWork { followSawWork = false; document.following = false }
+    }
+
     /// Browse Pull Requests, from the empty state (the window opens the sidebar).
     var onBrowsePullRequests: (() -> Void)?
     private var emptyView: EmptyReviewView?
@@ -662,6 +695,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
         guard agentButton.identifier?.rawValue != key else { return }
         agentButton.identifier = NSUserInterfaceItemIdentifier(key)
         agentButton.set(label: label, color: color, pulsing: pulsing)
+        updateFollowButton()
         agentButton.toolTip = tip
         needsLayout = true
     }
@@ -1309,14 +1343,62 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         }
     }
 
+    // MARK: Following the agent
+
+    /// Zed-style: the view goes where the agent is working (the file it just wrote,
+    /// the thread it just took). Scrolling yourself stops it.
+    var following = false { didSet { if following != oldValue { onFollowChanged?(following) } } }
+    var onFollowChanged: ((Bool) -> Void)?
+    private var claimed: Set<String> = []
+
+    /// Scroll so line `line` of file `i` is in view with a little context above, and flash it.
+    private func follow(file i: Int, line: Int) {
+        if files[i].collapsed { setCollapsed(i, false) }
+        guard let clip = superview as? NSClipView else { return }
+        let rows = files[i].layout.rows
+        let row = rows.first { if case let .line(l, _) = $0.kind { return l >= line } else { return false } } ?? rows.first
+        guard let row else { return }
+        let y = tops[i] + row.y - 4 * DiffStyle.lineHeight
+        clip.animator().setBoundsOrigin(NSPoint(x: 0, y: max(0, min(y, frame.height - clip.bounds.height))))
+        (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
+        flash(NSRect(x: 0, y: tops[i] + row.y, width: bounds.width, height: row.height))
+    }
+
+    /// A soft highlight that fades: "this just changed".
+    private func flash(_ rect: NSRect) {
+        let v = NSView(frame: rect)
+        v.wantsLayer = true
+        v.layer?.backgroundColor = DiffStyle.accent.withAlphaComponent(0.22).cgColor
+        addSubview(v, positioned: .below, relativeTo: hover)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 1.2
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
+            v.animator().alphaValue = 0
+        }, completionHandler: { v.removeFromSuperview() })
+    }
+
+    /// First line where `b` differs from `a`.
+    private static func firstChangedLine(_ a: String, _ b: String) -> Int {
+        var line = 0
+        for (x, y) in zip(a.utf16, b.utf16) {
+            if x != y { return line }
+            if x == 10 { line += 1 }
+        }
+        return line
+    }
+
     /// Swap in freshly loaded files, keeping per-file UI state, open editors
     /// (unsaved edits always win), comments, and the scroll position.
     private func merge(_ fresh: [ReviewFile], colored: [String: SyntaxSpans] = [:]) {
         // A file whose text didn't change keeps its object: layout, colours, everything.
         // (An agent usually touches one file; the rest must not so much as blink.)
+        var changed: (path: String, line: Int)? // where to follow: the first file the agent changed
         let newFiles = fresh.map { f -> ReviewFile in
             guard let old = indexByPath[f.path].map({ files[$0] }) else { return f }
             if old.newText.isEqual(to: f.newText as String), old.oldText == f.oldText, old.hunks == f.hunks { return old }
+            if changed == nil, editors[indexByPath[f.path]!]?.isDirty != true, editors[indexByPath[f.path]!]?.text != f.newText as String {
+                changed = (f.path, Self.firstChangedLine(old.newText as String, f.newText as String)) // not your own save
+            }
             if let spans = colored[f.path] { f.adoptSyntax(spans, for: f.newText as String) }
             if old.oldText == f.oldText { f.adoptOldSyntax(old.oldSyntax) }
             return f
@@ -1369,6 +1451,10 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         needsLayout = true
         canvas.needsDisplay = true
         onFilesReplaced?(files)
+        if following, let c = changed, let i = indexByPath[c.path] {
+            layoutSubtreeIfNeeded()
+            follow(file: i, line: c.line)
+        }
     }
 
     // MARK: Comments
@@ -1399,6 +1485,10 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         }
         layoutChanged()
         onThreadsChanged?()
+        // Following: a thread an agent just took comes into view.
+        let now = Set(allThreads.filter { activeClaim(thread: $0) != nil }.map(\.id))
+        if following, let t = allThreads.first(where: { now.contains($0.id) && !claimed.contains($0.id) }) { scrollToThread(t) }
+        claimed = now
     }
 
     /// Called whenever comments change (the comments panel follows).
@@ -1501,6 +1591,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     /// Hand one thread to your agent now; its fix and answer show up live.
     private func send(_ thread: Thread, file i: Int, line: Int) {
+        following = true // you just asked for it: watch it happen
         QuickSend.send(thread: thread, path: files[i].path, line: line, text: files[i].newText as String, repo: repoPath) { [weak self] error in
             self?.reloadThreads()
             if let error { self?.onNotice?(error) }

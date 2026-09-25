@@ -14,6 +14,7 @@ final class QuickSend {
     static var onChange: (() -> Void)?
 
     static func isRunning(_ thread: String) -> Bool { running[thread] != nil }
+    static var anyRunning: Bool { !running.isEmpty }
 
     /// Claude Code, or Codex if that's who you request reviews from.
     static func target(repo: String) -> AgentRunner.Target {

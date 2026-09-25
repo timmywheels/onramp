@@ -66,6 +66,8 @@ final class AgentButton: CapsuleButton {
     private let dot = CALayer()
     private var dotColor = NSColor.tertiaryLabelColor
     private var pulsing = false
+    /// Showing an agent at work (the pulsing dot).
+    var isWorking: Bool { pulsing }
 
     override init(frame: NSRect) {
         super.init(frame: frame)

@@ -191,6 +191,9 @@ enum SelfTest {
                 guard let target = doc.files.first(where: { $0.path.hasSuffix(".ts") && $0.syntax != nil }) else { return log("nothing coloured on screen") }
                 doc.scrollToFile(doc.files.firstIndex { $0 === target }!)
                 try? await Task.sleep(nanoseconds: 600_000_000)
+                doc.following = ProcessInfo.processInfo.environment["ONRAMP_FOLLOW"] != nil
+                doc.scrollToFile(doc.files.count - 1) // start far away: following should bring us to the change
+                try? await Task.sleep(nanoseconds: 300_000_000)
                 let url = URL(fileURLWithPath: repo).appendingPathComponent(target.path)
                 let text = try! String(contentsOf: url, encoding: .utf8)
                 try! (text + "export const touchedByAgent = 1;\n").write(to: url, atomically: true, encoding: .utf8)
@@ -202,6 +205,10 @@ enum SelfTest {
                     let rebuilt = doc.files.filter { before[$0.path] != ObjectIdentifier($0) }.map(\.path)
                     log("rebuilt \(rebuilt.count) of \(doc.files.count) files: \(rebuilt)")
                     log("changed file coloured when it landed: \(f.syntax != nil)")
+                    try? await Task.sleep(nanoseconds: 500_000_000) // the follow scroll animates
+                    let v = review.scrollView.contentView.bounds
+                    let i = doc.files.firstIndex { $0.path == target.path }!
+                    log("following: \(doc.following); view shows \(doc.files[doc.index(at: v.minY + 60)].path) (changed: \(target.path), file \(i))")
                     break
                 }
                 if !seen { log("reload never landed") }
