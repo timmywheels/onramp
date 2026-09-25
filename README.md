@@ -1,4 +1,4 @@
-# PairProgram
+# Onramp
 
 A native Mac app for reviewing your AI agent's changes before a human does:
 one endless, editable diff (Zed-style), inline comment threads, and a way for
@@ -6,7 +6,7 @@ any agent to read and resolve those comments.
 
 ## Install
 
-    ./scripts/install.sh          # builds and links ~/.local/bin/pair
+    ./scripts/install.sh          # builds and links ~/.local/bin/onramp
 
 ## Try it on a playground repo
 
@@ -18,9 +18,9 @@ TSX, Rust, Go, Python, CSS and YAML. Re-run it any time to reset.
 
 ## Use
 
-    pair                   # from anywhere in a repo; returns right away (like `code .`)
-    pair ~/dev/other-repo  # or point it at a repo
-    pair --wait            # keep the terminal attached until the window closes
+    onramp                   # from anywhere in a repo; returns right away (like `code .`)
+    onramp ~/dev/other-repo  # or point it at a repo
+    onramp --wait            # keep the terminal attached until the window closes
 
 - Hover a line and click **+** (or click its line number) to comment. **Comment** posts it now;
   **Start a review** holds it (and later ones) as *Pending*, like GitHub.
@@ -38,7 +38,7 @@ TSX, Rust, Go, Python, CSS and YAML. Re-run it any time to reset.
 - ⌃⌘S toggles the file tree, ⌘+/⌘− change the font, ⇧⌘R shows resolved comments.
 - **View → Font / Font Ligatures / Theme / Appearance.** The default font is
   [Lilex](https://github.com/mishamyrt/Lilex) (bundled, OFL). Everything is also in
-  `~/.config/pairprogram/settings.json` (**PairProgram → Settings…**, ⌘,).
+  `~/.config/pairprogram/settings.json` (**Onramp → Settings…**, ⌘,).
 
 ## Extensions
 
@@ -51,9 +51,9 @@ built-in ones live in `app/Sources/pairprogram/Extensions/`; yours go in
     version = "0.1.0"
     api_version = 1
     themes = ["themes/dracula.json"]    # same shape as app/Sources/pairprogram/Extensions/one-themes/themes/*.json
-    fonts = ["fonts/MyFont-Regular.ttf"] # registered for PairProgram only, not system-wide
+    fonts = ["fonts/MyFont-Regular.ttf"] # registered for Onramp only, not system-wide
 
-`pair extensions` lists what loaded and why anything didn't. The
+`onramp extensions` lists what loaded and why anything didn't. The
 manifest already reserves what code extensions will need (`runtime =
 "process"` now, `"wasm"` later, and `permissions`); those aren't supported yet.
 
@@ -64,7 +64,7 @@ on your comments — review standards, architecture notes, a private checklist. 
 file picker or by dropping them in. Each is *This repo* (kept in `.git/pairprogram/`, never
 committed) or *All repos* (`~/.config/pairprogram/`). Folders include their text files; there are
 size limits so agents get guidance, not a dump. Agents get it via the `get_review_context` MCP
-tool; `pair context` prints it.
+tool; `onramp context` prints it.
 
 ## Connect your agent (opt-in, MCP)
 
@@ -76,18 +76,18 @@ Cursor if installed; nothing is registered until you click **Connect** (and
     claude plugin marketplace add ~/.config/pairprogram/integrations/claude-code
     claude plugin install pairprogram@pairprogram
     # Codex (and anything else that speaks MCP)
-    codex mcp add pairprogram -- pair mcp
+    codex mcp add pairprogram -- onramp mcp
 
-Then ask your agent to "address my PairProgram comments", or in Claude Code
+Then ask your agent to "address my Onramp comments", or in Claude Code
 type `/pairprogram:address-comments`. The status bar shows "● claude-code
 connected" while an agent's session is live.
 
 Comments live in `.git/pairprogram/comments.json` (never committed). Agents
 without MCP can use the same CLI:
 
-    pair comments                       # open comments, with code in context
-    pair reply <id> "question"          # answer or ask
-    pair resolve <id> --note "what changed"
+    onramp comments                       # open comments, with code in context
+    onramp reply <id> "question"          # answer or ask
+    onramp resolve <id> --note "what changed"
 
 MCP tools: `list_comments`, `reply_to_comment`, `resolve_comment`,
 `reopen_comment`, plus the `address_comments` prompt. Replies are signed with

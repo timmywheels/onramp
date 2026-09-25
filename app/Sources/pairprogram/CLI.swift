@@ -1,26 +1,26 @@
 import AppKit
 
-/// `pair <command>`: how agents (any agent) read and answer review
+/// `onramp <command>`: how agents (any agent) read and answer review
 /// comments. Returns nil when the arguments mean "open the app".
 enum CLI {
     static let usage = """
-    pair                               open the review for the current repo (returns right away)
-    pair <path>                        open the review for the repo containing <path>
-    pair --wait [path]                 open it and wait until the window closes
+    onramp                             open the review for the current repo (returns right away)
+    onramp <path>                      open the review for the repo containing <path>
+    onramp --wait [path]               open it and wait until the window closes
 
-    pair comments [--json] [--all]
+    onramp comments [--json] [--all]
                                        print open comments (--all includes resolved)
-    pair reply <id> <text>             add a reply to a comment thread
-    pair resolve <id> [--note <text>]
+    onramp reply <id> <text>           add a reply to a comment thread
+    onramp resolve <id> [--note <text>]
                                        mark a thread resolved, optionally with a note
-    pair reopen <id>                   reopen a resolved thread
-    pair claim <id>                    claim a thread before working on it (other agents skip it)
-    pair release <id>                  give a claimed thread back
-    pair extensions                    list installed extensions and any problems loading them
-    pair context                       print the review context agents get (files you chose in the app)
-    pair prompt                        print instructions to paste into any agent
-    pair mcp                           run as an MCP server (stdio) for agents that speak MCP,
-                                       e.g. `claude mcp add pairprogram -- pair mcp`
+    onramp reopen <id>                 reopen a resolved thread
+    onramp claim <id>                  claim a thread before working on it (other agents skip it)
+    onramp release <id>                give a claimed thread back
+    onramp extensions                  list installed extensions and any problems loading them
+    onramp context                     print the review context agents get (files you chose in the app)
+    onramp prompt                      print instructions to paste into any agent
+    onramp mcp                         run as an MCP server (stdio) for agents that speak MCP,
+                                       e.g. `claude mcp add pairprogram -- onramp mcp`
 
     Options: -C <dir> (repo, default: current dir)  --author <name> (default: $PAIRPROGRAM_AUTHOR or "agent")
     """
@@ -67,15 +67,15 @@ enum CLI {
                 let root = try repoRoot(dir)
                 print(json ? try exportJson(repoRoot: root, includeResolved: all) : try exportMarkdown(repoRoot: root, includeResolved: all))
             case "reply":
-                guard args.count >= 2 else { return fail("usage: pair reply <id> <text>") }
+                guard args.count >= 2 else { return fail("usage: onramp reply <id> <text>") }
                 let t = try reply(repoRoot: try repoRoot(dir), id: args[0], author: author, body: args.dropFirst().joined(separator: " "), pending: false)
                 print("replied to \(t.id)")
             case "resolve", "reopen":
-                guard let id = args.first else { return fail("usage: pair \(command) <id>") }
+                guard let id = args.first else { return fail("usage: onramp \(command) <id>") }
                 let t = try setResolved(repoRoot: try repoRoot(dir), id: id, resolved: command == "resolve", author: author, note: note)
                 print("\(command == "resolve" ? "resolved" : "reopened") \(t.id)")
             case "claim", "release":
-                guard let id = args.first else { return fail("usage: pair \(command) <id>") }
+                guard let id = args.first else { return fail("usage: onramp \(command) <id>") }
                 let root = try repoRoot(dir)
                 let t = command == "claim" ? try claimThread(repoRoot: root, id: id, agent: author) : try releaseThread(repoRoot: root, id: id, agent: author)
                 print("\(command == "claim" ? "claimed" : "released") \(t.id)")
@@ -85,20 +85,20 @@ enum CLI {
             return 0
         } catch let error as CoreError {
             switch error {
-            case let .Git(message), let .Io(message): return fail("pair: \(message)")
+            case let .Git(message), let .Io(message): return fail("onramp: \(message)")
             }
         } catch {
-            return fail("pair: \(error)")
+            return fail("onramp: \(error)")
         }
     }
 
     static let prompt = """
-    I left review comments on your changes using PairProgram.
-    1. Run `pair comments` to see every open comment, with the code it refers to.
+    I left review comments on your changes using Onramp.
+    1. Run `onramp comments` to see every open comment, with the code it refers to.
     2. Address each one by editing the code.
-    3. After fixing one, run `pair resolve <id> --note "<what you changed>"`.
-       If you disagree or need a decision from me, run `pair reply <id> "<question>"` instead of resolving.
-    4. When done, run `pair comments` again to confirm nothing is left open.
+    3. After fixing one, run `onramp resolve <id> --note "<what you changed>"`.
+       If you disagree or need a decision from me, run `onramp reply <id> "<question>"` instead of resolving.
+    4. When done, run `onramp comments` again to confirm nothing is left open.
     """
 
     /// `repo` nil: opened from Finder / the Dock with no repo (reopen the last one).
@@ -107,7 +107,7 @@ enum CLI {
     static let bundleID = "com.timwheeler.pairprogram"
     static let openNotification = Notification.Name("com.timwheeler.pairprogram.open")
 
-    /// The PairProgram.app this binary lives in (also when run through the `pair` symlink).
+    /// The Onramp.app this binary lives in (also when run through the `onramp` / `pair` links).
     static var appBundle: URL? {
         let exe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
         guard let r = exe.range(of: ".app/Contents/MacOS/") else { return nil }
@@ -126,14 +126,14 @@ enum CLI {
         let root: String
         do { root = try repoRoot(URL(fileURLWithPath: path).standardizedFileURL.path) } catch {
             if fromFinder || (given == nil && appBundle != nil && env["TERM"] == nil) { return .run(repo: nil) }
-            FileHandle.standardError.write("pair: not inside a git repository: \(path)\n".data(using: .utf8)!)
+            FileHandle.standardError.write("onramp: not inside a git repository: \(path)\n".data(using: .utf8)!)
             return .exit(1)
         }
         // Already running (the installed app): hand it the repo; it opens a tab.
         if env["PP_SELFTEST"] == nil, env["PP_DETACHED"] == nil,
            NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).contains(where: { $0.processIdentifier != getpid() }) {
             DistributedNotificationCenter.default().postNotificationName(openNotification, object: root, userInfo: nil, deliverImmediately: true)
-            print("Opened \((root as NSString).lastPathComponent) in PairProgram")
+            print("Opened \((root as NSString).lastPathComponent) in Onramp")
             return .exit(0)
         }
         // Always detach (terminals, Claude Code's `!`, scripts), unless asked to wait.
@@ -146,7 +146,7 @@ enum CLI {
             open.arguments = ["-a", app.path, "--args", root]
             if (try? open.run()) != nil {
                 open.waitUntilExit()
-                print("Opening PairProgram for \((root as NSString).lastPathComponent)")
+                print("Opening Onramp for \((root as NSString).lastPathComponent)")
                 return .exit(0)
             }
         }
@@ -171,7 +171,7 @@ enum CLI {
         posix_spawnattr_destroy(&attr)
         posix_spawn_file_actions_destroy(&files)
         guard rc == 0 else { return .run(repo: root) } // couldn't detach: just run here
-        print("Opening PairProgram for \((root as NSString).lastPathComponent)")
+        print("Opening Onramp for \((root as NSString).lastPathComponent)")
         return .exit(0)
     }
 

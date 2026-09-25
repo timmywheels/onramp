@@ -15,7 +15,7 @@ enum Extensions {
 
     /// A file shipped in the app's resource bundle, if present.
     static func resource(_ name: String) -> URL? {
-        // In PairProgram.app the resources sit in Contents/Resources (see scripts/package.sh).
+        // In Onramp.app the resources sit in Contents/Resources (see scripts/package.sh).
         if Bundle.main.bundleIdentifier != nil, let url = Bundle.main.resourceURL?.appendingPathComponent(name),
            FileManager.default.fileExists(atPath: url.path) {
             return url
@@ -40,7 +40,7 @@ enum Extensions {
         let result = scan()
         loaded = result.extensions
         problems = result.problems
-        for p in problems { NSLog("PairProgram: extension %@: %@", p.dir, p.message) }
+        for p in problems { NSLog("Onramp: extension %@: %@", p.dir, p.message) }
 
         let fonts = loaded.flatMap(\.fonts).filter { !registeredFonts.contains($0) }
         if !fonts.isEmpty {
@@ -54,7 +54,7 @@ enum Extensions {
             do {
                 return try JSONDecoder().decode(Theme.self, from: data)
             } catch {
-                NSLog("PairProgram: theme %@: %@", path, "\(error)")
+                NSLog("Onramp: theme %@: %@", path, "\(error)")
                 return nil
             }
         }

@@ -24,7 +24,7 @@ arrow.lineJoinStyle = .round
 NSColor.white.withAlphaComponent(0.28).setStroke()
 arrow.stroke()
 
-let hint = NSAttributedString(string: "Drag PairProgram to Applications", attributes: [
+let hint = NSAttributedString(string: "Drag Onramp to Applications", attributes: [
     .font: NSFont.systemFont(ofSize: 13, weight: .medium),
     .foregroundColor: NSColor.white.withAlphaComponent(0.55),
 ])

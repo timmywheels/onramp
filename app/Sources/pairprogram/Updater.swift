@@ -5,7 +5,7 @@ private let log = Logger(subsystem: "com.timwheeler.pairprogram", category: "Upd
 
 /// Updates from GitHub Releases, the same way Stoplight does: find the
 /// latest release's notarized zip, download it, check it with Gatekeeper and
-/// that it's really PairProgram, swap the bundle in place, relaunch.
+/// that it's really Onramp, swap the bundle in place, relaunch.
 @MainActor
 final class Updater {
     static let shared = Updater()
@@ -62,7 +62,7 @@ final class Updater {
         do {
             var req = URLRequest(url: URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!)
             req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            req.setValue("PairProgram/\(currentVersion)", forHTTPHeaderField: "User-Agent")
+            req.setValue("Onramp/\(currentVersion)", forHTTPHeaderField: "User-Agent")
             let (data, _) = try await URLSession.shared.data(for: req)
             struct R: Decodable {
                 struct Asset: Decodable { let name: String; let browser_download_url: URL }
@@ -85,17 +85,18 @@ final class Updater {
     func install() async {
         guard let release = latest, updateAvailable, canUpdate else { return }
         state = .downloading
-        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("pairprogram-update-\(UUID().uuidString)")
+        let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("onramp-update-\(UUID().uuidString)")
         do {
             try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
             let (file, _) = try await URLSession.shared.download(from: release.zipURL)
-            let zip = tmp.appendingPathComponent("PairProgram.zip")
+            let zip = tmp.appendingPathComponent("Onramp.zip")
             try FileManager.default.moveItem(at: file, to: zip)
 
             state = .installing
             try run("/usr/bin/ditto", "-x", "-k", zip.path, tmp.path)
-            let newApp = tmp.appendingPathComponent("PairProgram.app")
-            guard FileManager.default.fileExists(atPath: newApp.path) else { throw Err.badArchive }
+            // Onramp.app (or Onramp.app, from before the rename).
+            guard let newApp = ["Onramp.app", "Onramp.app"].map({ tmp.appendingPathComponent($0) })
+                .first(where: { FileManager.default.fileExists(atPath: $0.path) }) else { throw Err.badArchive }
 
             // Refuse anything Gatekeeper wouldn't launch, and anything that isn't us.
             try run("/usr/sbin/spctl", "--assess", "--type", "execute", newApp.path)
@@ -124,7 +125,7 @@ final class Updater {
             switch state {
             case .available:
                 guard let latest else { return }
-                alert.messageText = "PairProgram \(latest.version) is available"
+                alert.messageText = "Onramp \(latest.version) is available"
                 alert.informativeText = "You have \(currentVersion). It installs in a few seconds and relaunches."
                 alert.addButton(withTitle: "Install and Relaunch")
                 alert.addButton(withTitle: "Release Notes")
@@ -135,7 +136,7 @@ final class Updater {
                 default: break
                 }
             case .upToDate:
-                alert.messageText = "PairProgram is up to date"
+                alert.messageText = "Onramp is up to date"
                 alert.informativeText = "You have the latest version, \(currentVersion)."
                 alert.runModal()
             case let .failed(message):
@@ -191,8 +192,8 @@ final class Updater {
         var errorDescription: String? {
             switch self {
             case .noAsset: "The release has no zip to install"
-            case .badArchive: "The download didn't contain PairProgram.app"
-            case .wrongBundle: "The download isn't PairProgram (different bundle identifier)"
+            case .badArchive: "The download didn't contain the app"
+            case .wrongBundle: "The download isn't Onramp (different bundle identifier)"
             case let .command(c, code): "\(URL(fileURLWithPath: c).lastPathComponent) failed (\(code)). The update was not installed."
             }
         }

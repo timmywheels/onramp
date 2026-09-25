@@ -1,6 +1,6 @@
 import AppKit
 
-/// pairprogram:// links, e.g. from Stoplight:
+/// onramp:// (and the older pairprogram://) links, e.g. from Stoplight:
 ///   pairprogram://pr?repo=owner/name&number=123   view that PR (as a tab)
 ///   pairprogram://open?path=/path/to/repo          open a project
 @MainActor

@@ -58,8 +58,8 @@ struct AgentIntegration {
     /// The command agents launch: the installed symlink if present, else this binary.
     static var command: String {
         let home = FileManager.default.homeDirectoryForCurrentUser
-        let link = [".local/bin/pair", ".local/bin/pairprogram"].map { home.appendingPathComponent($0).path }
-            .first { FileManager.default.isExecutableFile(atPath: $0) } ?? home.appendingPathComponent(".local/bin/pair").path
+        let link = [".local/bin/onramp", ".local/bin/pair", ".local/bin/pairprogram"].map { home.appendingPathComponent($0).path }
+            .first { FileManager.default.isExecutableFile(atPath: $0) } ?? home.appendingPathComponent(".local/bin/onramp").path
         if FileManager.default.isExecutableFile(atPath: link) { return link }
         return URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().path
     }
@@ -173,7 +173,7 @@ final class AgentConnectViewController: NSViewController {
         let stack = PopoverUI.stack([])
         PopoverUI.add(PopoverUI.title("Connect your coding agent"), to: stack, spacingAfter: 6)
         PopoverUI.add(PopoverUI.note("""
-        Adds PairProgram as an MCP server in the agent's settings, so it can read your review \
+        Adds Onramp as an MCP server in the agent's settings, so it can read your review \
         comments, reply and resolve them when you ask. Nothing leaves your machine, and you can \
         disconnect anytime.
         """), to: stack, spacingAfter: 14)
@@ -199,7 +199,7 @@ final class AgentConnectViewController: NSViewController {
             states.append(.checking)
         }
         stack.setCustomSpacing(16, after: stack.arrangedSubviews.last!)
-        PopoverUI.add(PopoverUI.note("Then ask your agent to “address my PairProgram comments”. In Claude Code: /pairprogram:address-comments", size: 11.5), to: stack)
+        PopoverUI.add(PopoverUI.note("Then ask your agent to “address my Onramp comments”. In Claude Code: /pairprogram:address-comments", size: 11.5), to: stack)
         view = PopoverUI.container(stack)
         preferredContentSize = view.frame.size
         refresh()

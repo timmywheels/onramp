@@ -320,7 +320,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             let title = u.state == .available ? "Update to \(u.latest?.version ?? "")" : u.state == .downloading ? "Downloading…" : "Installing…"
             updateButton.setText(title)
             updateButton.contentTintColor = DiffStyle.accent
-            updateButton.toolTip = "PairProgram \(u.latest?.version ?? "") is available (you have \(u.currentVersion))"
+            updateButton.toolTip = "Onramp \(u.latest?.version ?? "") is available (you have \(u.currentVersion))"
         }
         needsLayout = true
     }
@@ -328,7 +328,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
     @objc private func updateClicked() {
         guard Updater.shared.state == .available, let latest = Updater.shared.latest, let window else { return }
         let alert = NSAlert()
-        alert.messageText = "Install PairProgram \(latest.version) and relaunch?"
+        alert.messageText = "Install Onramp \(latest.version) and relaunch?"
         alert.informativeText = "You have \(Updater.shared.currentVersion). It takes a few seconds."
         alert.addButton(withTitle: "Install and Relaunch")
         alert.addButton(withTitle: "Release Notes")

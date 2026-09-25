@@ -14,9 +14,10 @@ struct Settings: Codable, Equatable {
 
     static let defaultFontSize = 12.5
 
-    /// Built-in themes were "pairprogram Dark/Light" before the app became PairProgram.
+    /// The built-in themes were "pairprogram …", then "PairProgram …", before the app became Onramp.
     static func renamed(_ theme: String) -> String {
-        ["pairprogram Dark": "PairProgram Dark", "pairprogram Light": "PairProgram Light"][theme] ?? theme
+        ["pairprogram Dark": "Onramp Dark", "pairprogram Light": "Onramp Light",
+         "PairProgram Dark": "Onramp Dark", "PairProgram Light": "Onramp Light"][theme] ?? theme
     }
 
     init() {}

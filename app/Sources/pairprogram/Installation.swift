@@ -1,6 +1,6 @@
 import AppKit
 
-/// Things the installed app (PairProgram.app) sets up for you.
+/// Things the installed app (Onramp.app) sets up for you.
 @MainActor
 enum Installation {
     /// The Claude Code plugin ships inside the app; keep the copy agents install from current.
@@ -13,26 +13,48 @@ enum Installation {
         try? FileManager.default.copyItem(at: bundled, to: dest)
     }
 
-    /// `pair` (and the older `pairprogram`) in ~/.local/bin, pointing into the app.
+    /// The command and its aliases (`pair` / `pairprogram` from before the rename).
+    static let commandNames = ["onramp", "ramp", "pair", "pairprogram"]
+
+    /// Updated from PairProgram: rename the app to Onramp.app, and re-point the
+    /// command links that pointed into the old bundle. Runs once, quietly.
+    static func finishRename() {
+        let fm = FileManager.default
+        let bundle = Bundle.main.bundleURL
+        guard Bundle.main.bundleIdentifier == CLI.bundleID, bundle.lastPathComponent == "PairProgram.app" else { return }
+        let target = bundle.deletingLastPathComponent().appendingPathComponent("Onramp.app")
+        guard !fm.fileExists(atPath: target.path), fm.isWritableFile(atPath: bundle.deletingLastPathComponent().path),
+              (try? fm.moveItem(at: bundle, to: target)) != nil else { return }
+        let exe = target.appendingPathComponent("Contents/MacOS/Onramp")
+        let bin = fm.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
+        for name in commandNames {
+            let link = bin.appendingPathComponent(name)
+            guard let dest = try? fm.destinationOfSymbolicLink(atPath: link.path), dest.contains("PairProgram.app/Contents/MacOS/") else { continue }
+            try? fm.removeItem(at: link)
+            try? fm.createSymbolicLink(at: link, withDestinationURL: exe)
+        }
+    }
+
+    /// `onramp` (plus `ramp`, and `pair` / `pairprogram` for older setups) in ~/.local/bin, pointing into the app.
     static func installCommandLineTool() {
         let alert = NSAlert()
         guard let exe = Bundle.main.executableURL?.resolvingSymlinksInPath() else { return }
         let bin = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
         do {
             try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
-            for name in ["pair", "pairprogram"] {
+            for name in Self.commandNames {
                 let link = bin.appendingPathComponent(name)
                 try? FileManager.default.removeItem(at: link)
                 try FileManager.default.createSymbolicLink(at: link, withDestinationURL: exe)
             }
             let onPath = (ProcessInfo.processInfo.environment["PATH"] ?? "").split(separator: ":").contains { $0 == bin.path } || shellPathHas(bin.path)
-            alert.messageText = "Installed the pair command"
+            alert.messageText = "Installed the onramp command"
             alert.informativeText = onPath
-                ? "Run `pair` in any git repo to review it, or `pair --help` for the agent commands."
+                ? "Run `onramp` (or `ramp`) in any git repo to review it, or `onramp --help` for the agent commands."
                 : "It's in ~/.local/bin, which isn't on your PATH yet. Add this line to ~/.zshrc, then open a new terminal:\n\nexport PATH=\"$HOME/.local/bin:$PATH\""
         } catch {
             alert.alertStyle = .warning
-            alert.messageText = "Couldn't install the pair command"
+            alert.messageText = "Couldn't install the onramp command"
             alert.informativeText = error.localizedDescription
         }
         alert.runModal()

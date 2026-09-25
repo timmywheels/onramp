@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds PairProgram (release) and links it into ~/.local/bin so you and your
-# agents can run `pair` from any repo (`pairprogram` still works too).
+# Builds Onramp (release) and links it into ~/.local/bin so you and your
+# agents can run `onramp` (or `ramp`) from any repo; `pair` / `pairprogram` still work.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 "$ROOT/scripts/build-core.sh"
@@ -9,9 +9,10 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 mkdir -p "$HOME/.config/pairprogram/integrations"
 rsync -a --delete "$ROOT/integrations/claude-code/" "$HOME/.config/pairprogram/integrations/claude-code/"
 mkdir -p "$HOME/.local/bin"
-ln -sf "$ROOT/app/.build/release/pairprogram" "$HOME/.local/bin/pair"
-ln -sf "$ROOT/app/.build/release/pairprogram" "$HOME/.local/bin/pairprogram" # older agent registrations use this name
-echo "installed: ~/.local/bin/pair"
+for name in onramp ramp pair pairprogram; do # pair / pairprogram: older agent registrations use these
+  ln -sf "$ROOT/app/.build/release/pairprogram" "$HOME/.local/bin/$name"
+done
+echo "installed: ~/.local/bin/onramp (and ramp)"
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) echo "note: add ~/.local/bin to your PATH, e.g. echo 'export PATH=\"\$HOME/.local/bin:\$PATH\"' >> ~/.zshrc" ;;

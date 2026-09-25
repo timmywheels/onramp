@@ -62,7 +62,7 @@ struct Theme: Codable {
 
     // MARK: Built-ins
 
-    static let dark = Theme(name: "PairProgram Dark", appearance: "dark", colors: [
+    static let dark = Theme(name: "Onramp Dark", appearance: "dark", colors: [
         "background": "#1e1e1e", "text": "#e6e6e6", "line_number": "#6e6e6e",
         "added_background": "#2ea04329", "deleted_background": "#f8514929", "deleted_text": "#e6e6e6bf",
         "fold_background": "#ffffff0d", "fold_text": "#8b8b8b",
@@ -79,7 +79,7 @@ struct Theme: Codable {
         "punctuation.special": "#56b6c2",
     ])
 
-    static let light = Theme(name: "PairProgram Light", appearance: "light", colors: [
+    static let light = Theme(name: "Onramp Light", appearance: "light", colors: [
         "background": "#ffffff", "text": "#1f2328", "line_number": "#8c959f",
         "added_background": "#1a7f3724", "deleted_background": "#cf222e1f", "deleted_text": "#1f2328b3",
         "fold_background": "#f6f8fa", "fold_text": "#57606a",

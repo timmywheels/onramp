@@ -26,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // The Dock / ⌘-Tab icon (the binary isn't inside a .app, so set it here).
         if let icon = Extensions.resource("AppIcon.icns").flatMap(NSImage.init(contentsOf:)) { NSApp.applicationIconImage = icon }
         Style.shared.start()
+        Installation.finishRename()
         Installation.syncIntegrations()
         Updater.shared.start()
         // `pair <repo>` while we're running: open it as a tab.
@@ -79,7 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// Folders dropped on the Dock icon ("Open With"), and pairprogram:// links (e.g. from Stoplight).
     func application(_ application: NSApplication, open urls: [URL]) {
         for url in urls {
-            if url.scheme == "pairprogram" { DeepLinks.handle(url, app: self); continue }
+            if url.scheme == "onramp" || url.scheme == "pairprogram" { DeepLinks.handle(url, app: self); continue }
             if let root = RecentProjects.repoRoot(of: url.path) { open(tabFor: root) }
         }
     }
@@ -240,7 +241,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appMenu.addItem(withTitle: "Open Themes Folder", action: #selector(openThemes(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Open Extensions Folder", action: #selector(openExtensions(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
-        appMenu.addItem(withTitle: "Quit PairProgram", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        appMenu.addItem(withTitle: "Quit Onramp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
         main.addItem(appItem)
 
