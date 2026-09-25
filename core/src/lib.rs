@@ -10,6 +10,7 @@ mod git_actions;
 mod extensions;
 mod repo;
 mod review;
+mod reviewers;
 mod syntax;
 
 pub use diff::{diff_lines, DiffHunk};
@@ -22,6 +23,7 @@ pub use review::{load_review, FileBody, FileDiff};
 pub use comments::*;
 pub use git_actions::{branch_status, commit_all, push_branch, BranchStatus};
 pub use context::{context_sources, review_context, set_context_sources, ContextBundle, ContextFile, ContextScope, ContextSource};
+pub use reviewers::{list_reviewers, severity_rank, Reviewer, ReviewerScan};
 pub use extensions::{extension_api_version, scan_extensions, Extension, ExtensionProblem, ExtensionScan};
 
 uniffi::setup_scaffolding!();

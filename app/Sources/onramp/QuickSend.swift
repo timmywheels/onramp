@@ -49,7 +49,8 @@ final class QuickSend {
             // Only what the job needs: no Bash (it tried, was refused, and lost turns), no MCP lookups.
             let flags = AgentTools.args["claude"].flatMap { $0.isEmpty ? nil : $0 }
                 ?? "--permission-mode acceptEdits --allowedTools 'Read,Edit,Write,Glob,Grep' --disallowedTools 'Bash'"
-            command = "\(exe) -p \(q) \(flags) --output-format json"
+            let model = AgentTools.model("claude").map { " --model '\($0)'" } ?? ""
+            command = "\(exe) -p \(q) \(flags)\(model) --output-format json"
         }
         FileManager.default.createFile(atPath: log.path, contents: Data("$ \(command)\n\n".utf8))
         let handle = try? FileHandle(forWritingTo: log)

@@ -36,7 +36,12 @@ enum CommentMetrics {
                                   options: [.usesLineFragmentOrigin, .usesFontLeading]).height)
     }
 
-    static func hasBanner(_ t: LocatedThread) -> Bool { t.line == nil || t.thread.status == .resolved }
+    static func hasBanner(_ t: LocatedThread) -> Bool { t.line == nil || t.thread.status == .resolved || t.thread.triage == "needed" }
+
+    /// A reviewer finding's colour by severity: critical/high red, medium amber, low grey.
+    static func severityColor(_ s: String?) -> NSColor {
+        switch s { case "critical", "high": DiffStyle.deletedAccent; case "medium": .systemOrange; default: .secondaryLabelColor }
+    }
 
     static func threadRowHeight(_ t: LocatedThread, replying: Bool, editing: Int? = nil) -> CGFloat {
         var h = 2 * margin + 2 * padding
@@ -250,6 +255,10 @@ final class CommentThreadView: NSView {
     var onCancelReply: (() -> Void)?
     var onToggleResolved: (() -> Void)?
     var onDelete: (() -> Void)?
+    /// A reviewer finding waiting for you: Keep (act on it) or Dismiss (never again).
+    var onKeep: (() -> Void)?
+    var onDismiss: (() -> Void)?
+    private var isFinding: Bool { located.thread.triage == "needed" }
 
     override var isFlipped: Bool { true }
 
@@ -312,7 +321,10 @@ final class CommentThreadView: NSView {
                 editInput = input
             }
         }
-        resolve.title = located.thread.status == .resolved ? "Reopen" : "Resolve"
+        resolve.title = isFinding ? "Dismiss" : located.thread.status == .resolved ? "Reopen" : "Resolve"
+        reply.title = isFinding ? "Keep" : "Reply"
+        reply.toolTip = isFinding ? "Agree: it becomes a normal comment your agent can act on (⌘⇧↩ in a reply sends it)" : nil
+        resolve.toolTip = isFinding ? "Disagree: resolved, and this reviewer won't report it again" : nil
         if replying != self.replying || (replying && replyInput == nil) {
             self.replying = replying
             replyInput?.removeFromSuperview()
@@ -384,9 +396,12 @@ final class CommentThreadView: NSView {
         let meta: [NSAttributedString.Key: Any] = [.font: CommentMetrics.metaFont, .foregroundColor: DiffStyle.foldText]
         if CommentMetrics.hasBanner(located) {
             var banner: [String] = []
-            if resolved { banner.append("✓ Resolved" + (t.resolvedBy.map { " by \($0)" } ?? "")) }
+            if t.triage == "needed" { banner.append("● \((t.severity ?? "finding").uppercased()) · \(t.entries.first?.author ?? "Reviewer") finding: keep it or dismiss it") }
+            if resolved { banner.append("✓ " + (t.triage == "dismissed" ? "Dismissed" : "Resolved") + (t.resolvedBy.map { " by \($0)" } ?? "")) }
             if located.line == nil { banner.append("Outdated: line \(t.anchor.line + 1) changed since this comment") }
-            NSAttributedString(string: banner.joined(separator: " · "), attributes: meta).draw(at: NSPoint(x: p, y: y))
+            var bannerAttrs = meta
+            if t.triage == "needed" { bannerAttrs[.foregroundColor] = CommentMetrics.severityColor(t.severity) }
+            NSAttributedString(string: banner.joined(separator: " · "), attributes: bannerAttrs).draw(at: NSPoint(x: p, y: y))
             y += CommentMetrics.metaHeight + 4
         }
         if let claim = activeClaim(thread: t) {
@@ -470,8 +485,8 @@ final class CommentThreadView: NSView {
     }
 
     @objc private func pencilClicked(_ sender: NSButton) { onStartEdit?(sender.tag) }
-    @objc private func replyClicked() { onStartReply?() }
-    @objc private func resolveClicked() { onToggleResolved?() }
+    @objc private func replyClicked() { isFinding ? onKeep?() : onStartReply?() }
+    @objc private func resolveClicked() { isFinding ? onDismiss?() : onToggleResolved?() }
     @objc private func deleteClicked() { onDelete?() }
 }
 

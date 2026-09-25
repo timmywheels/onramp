@@ -194,6 +194,9 @@ final class AgentCursorView: NSView {
     static let labelHeight: CGFloat = 14
     private let agent: String
     private let color: NSColor
+    /// The code it's typing, drawn over the lines it replaces until the file is saved.
+    var preview: String? { didSet { if preview != oldValue { needsDisplay = true } } }
+    var previewLines: Int { preview.map { max(1, $0.components(separatedBy: "\n").count) } ?? 0 }
 
     init(agent: String, color: NSColor) {
         self.agent = agent
@@ -208,8 +211,19 @@ final class AgentCursorView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         let line = NSRect(x: 0, y: Self.labelHeight, width: bounds.width, height: bounds.height - Self.labelHeight)
-        color.withAlphaComponent(0.13).setFill()
-        line.fill()
+        if let preview { // the new code as it streams in, on an opaque band so the old lines don't show through
+            DiffStyle.background.setFill()
+            line.fill()
+            color.withAlphaComponent(0.10).setFill()
+            line.fill()
+            let attrs: [NSAttributedString.Key: Any] = [.font: DiffStyle.font, .foregroundColor: DiffStyle.text]
+            for (k, text) in preview.components(separatedBy: "\n").enumerated() {
+                NSAttributedString(string: text, attributes: attrs).draw(at: NSPoint(x: DiffStyle.gutterWidth + 8, y: line.minY + CGFloat(k) * DiffStyle.lineHeight + 2))
+            }
+        } else {
+            color.withAlphaComponent(0.13).setFill()
+            line.fill()
+        }
         let x = DiffStyle.gutterWidth + 2
         color.setFill()
         NSRect(x: x, y: line.minY, width: 2, height: line.height).fill() // the caret

@@ -115,7 +115,7 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
             p.agents.append(.init(name: name, working: working, file: claims[name]))
         }
         p.waiting = threads.filter { t in
-            guard t.status == .open, t.source == nil, activeClaim(thread: t) == nil,
+            guard t.status == .open, t.source == nil, t.triage == nil, activeClaim(thread: t) == nil,
                   let last = t.entries.last(where: { !$0.pending }) else { return false }
             return last.author != me
         }.count

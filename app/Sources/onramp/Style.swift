@@ -14,6 +14,7 @@ struct Settings: Codable, Equatable {
     var menuBar = true                     // the yield sign in the menu bar: what your agents are doing
     var dockIcon = true                    // false: menu bar only (needs menu_bar on)
     var agentSession = "auto"              // agent_session: auto (a primed Claude session per review) | manual | off
+    var agentModel: [String: String] = [:] // agent_model: {"claude": "sonnet"} for faster answers; unset = the agent's default
     var agentPaths: [String: String] = [:] // agent_paths: {"claude": "/path/to/claude"}; unset = found on your shell's PATH
     var agentArgs: [String: String] = [:]  // agent_args: {"codex": "--full-auto"}; replaces the flags Onramp picks for a review run
 
@@ -36,6 +37,7 @@ struct Settings: Codable, Equatable {
         menuBar = try c.decodeIfPresent(Bool.self, forKey: .menuBar) ?? d.menuBar
         dockIcon = try c.decodeIfPresent(Bool.self, forKey: .dockIcon) ?? d.dockIcon
         agentSession = try c.decodeIfPresent(String.self, forKey: .agentSession) ?? d.agentSession
+        agentModel = try c.decodeIfPresent([String: String].self, forKey: .agentModel) ?? d.agentModel
         agentPaths = try c.decodeIfPresent([String: String].self, forKey: .agentPaths) ?? d.agentPaths
         agentArgs = try c.decodeIfPresent([String: String].self, forKey: .agentArgs) ?? d.agentArgs
     }
@@ -195,6 +197,7 @@ final class Style {
         GitHub.configuredPath = settings.ghPath
         AgentTools.paths = settings.agentPaths
         AgentTools.args = settings.agentArgs
+        AgentTools.models = settings.agentModel
         switch settings.appearance {
         case "light": NSApp.appearance = NSAppearance(named: .aqua)
         case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)

@@ -74,9 +74,96 @@ pub struct Thread {
     /// An agent working on this thread right now (see `claim_thread`).
     #[serde(default)]
     pub claim: Option<Claim>,
-    /// Where it came from when not a person: "ci:<key>" for a CI failure.
+    /// Where it came from when not a person: "ci:<key>" for a CI failure,
+    /// "reviewer:<id>:<key>" for a finding from a reviewer (e.g. the red team).
     #[serde(default)]
     pub source: Option<String>,
+    /// A reviewer finding's severity: "critical" | "high" | "medium" | "low".
+    #[serde(default)]
+    pub severity: Option<String>,
+    /// A reviewer finding you haven't decided on yet ("needed"), or turned down
+    /// ("dismissed"). None: a normal thread (including findings you kept).
+    #[serde(default)]
+    pub triage: Option<String>,
+}
+
+/// One problem a reviewer reports: where, how bad, and why.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct Finding {
+    pub path: String,
+    pub line: u32, // 0-based
+    /// The file as the reviewer saw it (to anchor the thread).
+    pub text: String,
+    pub severity: String,
+    pub title: String,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct FindingsAdded {
+    pub added: u32,
+    /// Already reported (open, kept or dismissed): not repeated.
+    pub skipped: u32,
+}
+
+/// The same place in the code is the same finding: reviewers reword their titles
+/// from run to run, so the key is the file and the line's text, not the words.
+fn finding_key(reviewer: &str, f: &Finding) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let line = f.text.lines().nth(f.line as usize).unwrap_or("").trim();
+    for b in format!("{}|{}", f.path, line).bytes() {
+        h = (h ^ b as u64).wrapping_mul(0x100_0000_01b3);
+    }
+    format!("reviewer:{reviewer}:{h:016x}")
+}
+
+/// A reviewer's findings become threads waiting for your triage (Keep or Dismiss).
+/// One it reported before, open or dismissed, isn't added again.
+#[uniffi::export]
+pub fn add_findings(repo_root: String, reviewer: String, author: String, findings: Vec<Finding>) -> Result<FindingsAdded, CoreError> {
+    let mut out = FindingsAdded { added: 0, skipped: 0 };
+    let existing: Vec<String> = load_threads(repo_root.clone())?.into_iter().filter_map(|t| t.source).collect();
+    for f in &findings {
+        let key = finding_key(&reviewer, f);
+        if existing.contains(&key) {
+            out.skipped += 1;
+            continue;
+        }
+        let body = if f.title.trim().is_empty() { f.body.trim().to_string() } else { format!("**{}**\n\n{}", f.title.trim(), f.body.trim()) };
+        let t = add_thread(repo_root.clone(), f.path.clone(), f.text.clone(), f.line, false, author.clone(), body, false)?;
+        let severity = f.severity.to_lowercase();
+        modify(&repo_root, |store| {
+            if let Some(s) = store.threads.iter_mut().find(|s| s.id == t.id) {
+                s.source = Some(key.clone());
+                s.severity = Some(severity.clone());
+                s.triage = Some("needed".into());
+            }
+            Ok(())
+        })?;
+        out.added += 1;
+    }
+    Ok(out)
+}
+
+/// You agree with a finding: it becomes a normal comment (agents see it; send it to fix it).
+#[uniffi::export]
+pub fn keep_finding(repo_root: String, id: String) -> Result<Thread, CoreError> {
+    modify(&repo_root, |store| {
+        let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
+        t.triage = None;
+        Ok(t.clone())
+    })
+}
+
+/// You don't: resolved, and never reported again by that reviewer.
+#[uniffi::export]
+pub fn dismiss_finding(repo_root: String, id: String, author: String, note: Option<String>) -> Result<Thread, CoreError> {
+    set_resolved(repo_root.clone(), id.clone(), true, author, Some(note.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "Dismissed.".into())))?;
+    modify(&repo_root, |store| {
+        let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
+        t.triage = Some("dismissed".into());
+        Ok(t.clone())
+    })
 }
 
 /// One failing CI annotation (a check run's file + line + message).
@@ -293,6 +380,8 @@ pub fn add_thread(repo_root: String, path: String, text: String, line: u32, old_
             resolved_by: None,
             claim: None,
             source: None,
+            severity: None,
+            triage: None,
         };
         store.threads.push(thread.clone());
         Ok(thread)
@@ -429,9 +518,12 @@ pub fn load_reviews(repo_root: String) -> Result<Vec<Review>, CoreError> {
 }
 
 /// What agents see: no pending (unsubmitted) entries, and no threads that are only pending.
+/// What agents get: submitted entries only, and no findings you haven't triaged
+/// (they'd "fix" something you may not agree with).
 fn submitted_only(threads: Vec<Thread>) -> Vec<Thread> {
     threads
         .into_iter()
+        .filter(|t| t.triage.as_deref() != Some("needed"))
         .filter_map(|mut t| {
             t.entries.retain(|e| !e.pending);
             (!t.entries.is_empty()).then_some(t)
@@ -698,6 +790,36 @@ mod tests {
         assert_eq!(done.claim, None);
         assert!(claim_thread(root.clone(), t.id.clone(), "codex".into()).is_err()); // resolved
         assert!(submit_review(root.clone(), "you".into(), String::new(), Verdict::Comment).is_err()); // truly nothing
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn findings_wait_for_triage() {
+        let dir = std::env::temp_dir().join(format!("onramp-findings-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        Command::new("git").args(["init", "-q"]).current_dir(&dir).status().unwrap();
+        let root = dir.to_string_lossy().to_string();
+        let text = "fn a(v: &str) {}\nfn b() { x / y }\n".to_string();
+        let f = |line: u32, title: &str| Finding { path: "a.rs".into(), line, text: text.clone(), severity: "High".into(), title: title.into(), body: "y can be 0".into() };
+
+        let r = add_findings(root.clone(), "red-team".into(), "Red team".into(), vec![f(1, "Division by zero"), f(0, "Unchecked input")]).unwrap();
+        assert_eq!((r.added, r.skipped), (2, 0));
+        let again = add_findings(root.clone(), "red-team".into(), "Red team".into(), vec![f(1, "y may be zero, so this divides by zero")]).unwrap();
+        assert_eq!((again.added, again.skipped), (0, 1)); // reworded, same place: not repeated
+
+        let threads = load_threads(root.clone()).unwrap();
+        assert!(threads.iter().all(|t| t.triage.as_deref() == Some("needed") && t.severity.as_deref() == Some("high")));
+        assert!(!export_markdown(root.clone(), false).unwrap().contains("Division by zero")); // agents don't see untriaged
+
+        let kept = keep_finding(root.clone(), threads[0].id.clone()).unwrap();
+        assert_eq!(kept.triage, None);
+        assert!(export_markdown(root.clone(), false).unwrap().contains("Division by zero"));
+
+        let gone = dismiss_finding(root.clone(), threads[1].id.clone(), "you".into(), None).unwrap();
+        assert_eq!((gone.status, gone.triage.as_deref()), (ThreadStatus::Resolved, Some("dismissed")));
+        let after = add_findings(root.clone(), "red-team".into(), "Red team".into(), vec![f(0, "Input isn't validated")]).unwrap();
+        assert_eq!(after.added, 0); // dismissed stays dismissed
         let _ = fs::remove_dir_all(&dir);
     }
 

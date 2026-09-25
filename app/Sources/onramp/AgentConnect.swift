@@ -59,6 +59,9 @@ enum AgentColor {
 enum AgentTools {
     nonisolated(unsafe) static var paths: [String: String] = [:]
     nonisolated(unsafe) static var args: [String: String] = [:]
+    /// agent_model: which model each agent runs with ("sonnet" is quicker than the default for most).
+    nonisolated(unsafe) static var models: [String: String] = [:]
+    static func model(_ tool: String) -> String? { models[tool].flatMap { $0.isEmpty ? nil : $0 } }
 
     /// The command's absolute path, or nil if it's nowhere to be found.
     static func path(_ tool: String) -> String? {

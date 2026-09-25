@@ -1,0 +1,30 @@
+# The red team: an adversarial pass over the whole change, in a session of its
+# own (it never sees your comments, so it doesn't anchor on them). Its findings
+# land as threads for you to Keep or Dismiss; nothing reaches your agent until
+# you keep it.
+#
+# Make your own: copy this to ~/.config/onramp/reviewers/ (just you) or to
+# .onramp/reviewers/ in a repo (your team), and change what you like. Same id
+# replaces this one.
+id = "red-team"
+name = "Red team"
+agent = "claude"
+when = "manual"          # manual | pr_open
+read_only = true
+focus = [
+  "correctness: logic errors, wrong conditions, off-by-one, unhandled cases",
+  "data: lost or corrupted writes, races, partial failures, migrations",
+  "security: injection, authz gaps, secrets, unsafe input",
+  "does it do what the PR (and its issue) says it does",
+  "missing or misleading tests",
+]
+min_severity = "medium"
+max_findings = 12
+prompt = """
+You are the red team on this change. Assume it's wrong until the code proves
+otherwise, and look for the ways it breaks in production. Read the changed code
+and what it calls; check the edge cases the author likely didn't.
+
+Report only real problems you can point at, each with a concrete failing case.
+No style, naming or formatting nits, and nothing you can't tie to a line.
+"""

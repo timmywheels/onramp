@@ -19,6 +19,8 @@ final class AgentSession {
         let kind: Kind
         let path: String?   // relative to the repo
         let line: Int?      // 0-based, for edits once the file is on disk
+        /// The code it's writing, as it streams in (before the file is saved).
+        var preview: String? = nil
         var label: String {
             let where_ = path.map { " " + ($0 as NSString).lastPathComponent + (line.map { ":\($0 + 1)" } ?? "") } ?? ""
             switch kind {
@@ -51,6 +53,13 @@ final class AgentSession {
     private var queue: [(thread: String, message: String)] = []
     private var sessionID: String?
     private var log: FileHandle?
+    // Streaming state for the current turn.
+    private var toolName: String?
+    private var toolJSON = ""
+    private var replyText = ""
+    private var replyEntry: UInt32?     // the entry its answer is streaming into
+    private var lastFlush = Date.distantPast
+    private var lastPreview = Date.distantPast
 
     init(repo: String, workDir: String, readOnly: Bool, key: String) {
         self.repo = repo
@@ -72,7 +81,8 @@ final class AgentSession {
         guard process == nil else { return }
         guard let claude = AgentTools.path("claude") else { return state = .failed("Couldn't find the claude command") }
         let resume = fresh ? nil : Self.savedSession(key)
-        var args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
+        // Partial messages: the code it writes and its answer arrive as they're typed (from ~1.5 s), not at the end.
+        var args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"]
         if let custom = AgentTools.args["claude"], !custom.isEmpty {
             args += custom.split(separator: " ").map(String.init) // yours win (simple space-separated flags)
         } else if readOnly {
@@ -80,6 +90,7 @@ final class AgentSession {
         } else {
             args += ["--permission-mode", "acceptEdits", "--allowedTools", "Read,Edit,Write,Glob,Grep", "--disallowedTools", "Bash"]
         }
+        if let model = AgentTools.model("claude") { args += ["--model", model] }
         if let resume { args += ["--resume", resume] }
 
         let p = Process()
@@ -177,6 +188,8 @@ final class AgentSession {
 
     private func handle(_ m: [String: Any]) {
         switch m["type"] as? String {
+        case "stream_event":
+            streamed(m["event"] as? [String: Any] ?? [:])
         case "system":
             if let id = m["session_id"] as? String, sessionID != id {
                 sessionID = id
@@ -189,7 +202,11 @@ final class AgentSession {
                     let input = c["input"] as? [String: Any] ?? [:]
                     let path = (input["file_path"] as? String).map(relative)
                     switch name {
-                    case "Edit", "Write", "MultiEdit": activity = Activity(kind: .editing, path: path, line: editLine(path, input))
+                    case "Edit", "Write", "MultiEdit":
+                        // Once it's saved the old text is gone: keep the line (and preview) we already had for this file.
+                        let same = activity?.path == path
+                        activity = Activity(kind: .editing, path: path, line: editLine(path, input) ?? (same ? activity?.line : nil),
+                                            preview: same ? activity?.preview : nil)
                     case "Read": activity = Activity(kind: .reading, path: path, line: nil)
                     case "Grep", "Glob": activity = Activity(kind: .searching, path: (input["path"] as? String).map(relative), line: nil)
                     default: break
@@ -208,8 +225,92 @@ final class AgentSession {
                 post(text, to: t)
                 finish(t, error: (m["is_error"] as? Bool == true) ? "The agent stopped with an error." : nil)
             }
+            replyText = ""; replyEntry = nil; toolName = nil
         default: break
         }
+    }
+
+    // MARK: Streaming (partial messages)
+
+    private func streamed(_ e: [String: Any]) {
+        switch e["type"] as? String {
+        case "content_block_start":
+            let block = e["content_block"] as? [String: Any] ?? [:]
+            if block["type"] as? String == "tool_use" { toolName = block["name"] as? String; toolJSON = "" }
+        case "content_block_delta":
+            let d = e["delta"] as? [String: Any] ?? [:]
+            if d["type"] as? String == "input_json_delta", let part = d["partial_json"] as? String {
+                toolJSON += part
+                if ["Edit", "Write", "MultiEdit"].contains(toolName ?? ""), Date().timeIntervalSince(lastPreview) > 0.05 {
+                    lastPreview = Date()
+                    livePreview()
+                }
+            } else if d["type"] as? String == "text_delta", let text = d["text"] as? String, currentThread != nil, state == .busy {
+                replyText += text
+                activity = Activity(kind: .answering, path: nil, line: nil)
+                if Date().timeIntervalSince(lastFlush) > 0.25 { flushReply() }
+            }
+        case "content_block_stop":
+            if toolName != nil, ["Edit", "Write", "MultiEdit"].contains(toolName!) { livePreview() }
+            toolName = nil
+        default: break
+        }
+    }
+
+    /// The edit it's typing, shown at its cursor before it's saved.
+    private func livePreview() {
+        guard let path = Self.partialString(toolJSON, "file_path").flatMap({ $0.complete ? $0.value : nil }).map(relative) else { return }
+        let old = Self.partialString(toolJSON, "old_string")
+        let new = Self.partialString(toolJSON, "new_string") ?? Self.partialString(toolJSON, "content")
+        var line: Int?
+        if let old, old.complete { line = editLine(path, ["old_string": old.value]) } else if toolName == "Write" { line = 0 }
+        activity = Activity(kind: .editing, path: path, line: line ?? activity?.line, preview: new?.value)
+    }
+
+    /// Its answer, typed into the thread as it arrives (a reply entry, updated in place).
+    private func flushReply() {
+        guard let t = currentThread, !replyText.isEmpty else { return }
+        lastFlush = Date()
+        if let i = replyEntry {
+            _ = try? editEntry(repoRoot: repo, id: t, index: i, body: replyText)
+        } else if let thread = try? reply(repoRoot: repo, id: t, author: agentName, body: replyText, pending: false) {
+            replyEntry = UInt32(thread.entries.count - 1)
+            _ = try? claimThread(repoRoot: repo, id: t, agent: agentName) // still at it: a reply hands the thread back, so take it again
+        }
+    }
+
+    /// A JSON string value that may still be streaming in: its text so far, and whether it's closed.
+    static func partialString(_ json: String, _ key: String) -> (value: String, complete: Bool)? {
+        guard let k = json.range(of: "\"\(key)\"") else { return nil }
+        var i = k.upperBound
+        while i < json.endIndex, json[i] == " " || json[i] == ":" { i = json.index(after: i) }
+        guard i < json.endIndex, json[i] == "\"" else { return nil }
+        i = json.index(after: i)
+        var out = ""
+        while i < json.endIndex {
+            let c = json[i]
+            if c == "\"" { return (out, true) }
+            if c == "\\" {
+                let n = json.index(after: i)
+                guard n < json.endIndex else { break }
+                switch json[n] {
+                case "n": out.append("\n")
+                case "t": out.append("\t")
+                case "\"": out.append("\"")
+                case "\\": out.append("\\")
+                case "/": out.append("/")
+                case "u":
+                    let hex = json.index(n, offsetBy: 5, limitedBy: json.endIndex).map { json[json.index(after: n)..<$0] }
+                    if let hex, hex.count == 4, let v = UInt32(hex, radix: 16), let s = Unicode.Scalar(v) { out.unicodeScalars.append(s); i = json.index(n, offsetBy: 4) } else { return (out, false) }
+                default: out.append(json[n])
+                }
+                i = json.index(after: n)
+                continue
+            }
+            out.append(c)
+            i = json.index(after: i)
+        }
+        return (out, false)
     }
 
     private func relative(_ path: String) -> String {
@@ -230,13 +331,16 @@ final class AgentSession {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         let last = trimmed.components(separatedBy: "\n").last { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""
-        if last.hasPrefix("RESOLVED:"), !readOnly {
-            let note = last.dropFirst("RESOLVED:".count).trimmingCharacters(in: .whitespaces)
-            _ = try? setResolved(repoRoot: repo, id: thread, resolved: true, author: agentName, note: note.isEmpty ? nil : note)
+        let resolves = last.hasPrefix("RESOLVED:") && !readOnly
+        let body = last.hasPrefix("QUESTION:") ? last.dropFirst("QUESTION:".count).trimmingCharacters(in: .whitespaces)
+            : last.hasPrefix("RESOLVED:") ? last.dropFirst("RESOLVED:".count).trimmingCharacters(in: .whitespaces) // read-only: you resolve
+            : String(trimmed.suffix(4000))
+        if let i = replyEntry { // it was typed in live: settle that entry on the final words
+            _ = try? editEntry(repoRoot: repo, id: thread, index: i, body: body)
+            if resolves { _ = try? setResolved(repoRoot: repo, id: thread, resolved: true, author: agentName, note: nil) }
+        } else if resolves {
+            _ = try? setResolved(repoRoot: repo, id: thread, resolved: true, author: agentName, note: body.isEmpty ? nil : body)
         } else {
-            let body = last.hasPrefix("QUESTION:") ? last.dropFirst("QUESTION:".count).trimmingCharacters(in: .whitespaces)
-                : last.hasPrefix("RESOLVED:") ? last.dropFirst("RESOLVED:".count).trimmingCharacters(in: .whitespaces) // read-only: you resolve
-                : String(trimmed.suffix(4000))
             _ = try? reply(repoRoot: repo, id: thread, author: agentName, body: body, pending: false)
         }
     }

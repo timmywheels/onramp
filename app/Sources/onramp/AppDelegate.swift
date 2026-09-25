@@ -220,6 +220,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func toggleFollow(_ sender: Any?) { front?.review.toggleFollow() }
     /// The review's primed Claude session: start (or resume), start over, or end it.
     @objc func startAgentSession(_ sender: Any?) { front?.review.startSession(force: true) }
+    @objc func runReviewer(_ sender: NSMenuItem) {
+        guard let r = sender.representedObject as? Reviewer else { return }
+        front?.review.runReviewer(r)
+    }
+    /// A new reviewer of yours, from the red team as a template, opened in your editor.
+    @objc func newReviewer(_ sender: Any?) {
+        let dir = onrampConfigDir.appendingPathComponent("reviewers")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        var url = dir.appendingPathComponent("my-reviewer.toml")
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) { url = dir.appendingPathComponent("my-reviewer-\(n).toml"); n += 1 }
+        let template = Extensions.resource("Reviewers")?.appendingPathComponent("red-team.toml")
+        var text = template.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "id = \"my-reviewer\"\nname = \"My reviewer\"\nprompt = \"\"\"\n\"\"\"\n"
+        let id = url.deletingPathExtension().lastPathComponent
+        text = text.replacingOccurrences(of: "id = \"red-team\"", with: "id = \"\(id)\"").replacingOccurrences(of: "name = \"Red team\"", with: "name = \"\(id)\"")
+        try? text.write(to: url, atomically: true, encoding: .utf8)
+        NSWorkspace.shared.open(url)
+    }
     @objc func newAgentSession(_ sender: Any?) { front?.review.startSession(fresh: true, force: true) }
     @objc func endAgentSession(_ sender: Any?) { front?.review.stopSession() }
     @objc func toggleMenuBar(_ sender: Any?) { Style.shared.update { $0.menuBar.toggle() } }
@@ -239,6 +257,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        if menu.title == "Run Reviewer" {
+            menu.removeAllItems()
+            let reviewers = front.map { ReviewerRun.all(repo: $0.repoPath) } ?? []
+            for (k, r) in reviewers.enumerated() {
+                let item = menu.addItem(withTitle: r.name, action: #selector(runReviewer(_:)), keyEquivalent: k == 0 ? "r" : "")
+                item.keyEquivalentModifierMask = [.option, .command]
+                item.representedObject = r
+                item.toolTip = r.file
+            }
+            if !reviewers.isEmpty { menu.addItem(.separator()) }
+            menu.addItem(withTitle: "New Reviewer…", action: #selector(newReviewer(_:)), keyEquivalent: "")
+            return
+        }
         menu.item(withTitle: "Show Resolved Comments")?.state = ReviewFile.showResolved ? .on : .off
         menu.item(withTitle: "Show Right Panel")?.state = front?.commentsVisible == true ? .on : .off
         let style = Style.shared
@@ -320,6 +351,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         pr.keyEquivalentModifierMask = [.command, .shift]
         reviewMenu.addItem(withTitle: "Context…", action: #selector(openContext(_:)), keyEquivalent: "k")
         reviewMenu.addItem(.separator())
+        let reviewers = reviewMenu.addItem(withTitle: "Run Reviewer", action: nil, keyEquivalent: "")
+        reviewers.submenu = NSMenu(title: "Run Reviewer")
+        reviewers.submenu?.delegate = self // lists this repo's reviewers when opened
         reviewMenu.addItem(withTitle: "Start Agent Session", action: #selector(startAgentSession(_:)), keyEquivalent: "")
         reviewMenu.addItem(withTitle: "New Agent Session", action: #selector(newAgentSession(_:)), keyEquivalent: "")
         reviewMenu.addItem(withTitle: "End Agent Session", action: #selector(endAgentSession(_:)), keyEquivalent: "")

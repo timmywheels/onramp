@@ -230,6 +230,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             return true
         }
         startSession() // primed by the time you have a question
+        runAutoReviewers()
         document.onFilesReplaced = { [weak self] files in self?.onLoad?(files); self?.updateStatus(); self?.updateEmpty() }
         updateEmpty()
         document.watchWorkingTree()
@@ -362,11 +363,13 @@ final class ReviewView: NSView, NSPopoverDelegate {
                     guard let self, let s else { return }
                     CommentThreadView.activity = s.currentThread.map { [$0: activity?.label ?? "working"] } ?? [:]
                     if let t = s.currentThread { self.document.threadView(t)?.needsDisplay = true }
+                    self.document.agentPreview = activity?.kind == .editing ? activity?.preview : nil
                     self.document.agentCursor = activity.flatMap { a in a.kind == .editing ? a.path.map { ($0, a.line) } : nil }
                     self.updateAgents()
                 }
                 s.onFinished = { [weak self] _, error in
                     CommentThreadView.activity = [:]
+                    self?.document.agentPreview = nil
                     self?.document.agentCursor = nil
                     self?.document.reloadThreads()
                     if let error { self?.document.onNotice?(error) }
@@ -375,6 +378,53 @@ final class ReviewView: NSView, NSPopoverDelegate {
                 s.start(prime: AgentSession.primePrompt(files: files, title: title, description: pr?.body, context: context, readOnly: readOnly), fresh: fresh)
             }
         }
+    }
+
+    // MARK: Reviewers (the red team…)
+
+    private(set) var reviewerRun: ReviewerRun?
+    /// PRs a `when = "pr_open"` reviewer already ran on in this tab.
+    private var autoReviewed: Set<String> = []
+
+    /// Run a reviewer over what's on screen. Findings land as threads for you to triage.
+    func runReviewer(_ r: Reviewer) {
+        guard reviewerRun?.state != .running else { document.onNotice?("\(reviewerRun!.reviewer.name) is still running."); return }
+        guard r.agent == "claude" else { document.onNotice?("\(r.name) asks for \(r.agent); reviewers run on Claude Code for now."); return }
+        let repo = repoPath, readOnly = document.readOnly
+        let files = document.files
+        let prNumber = base?.mode == .pullRequest ? choice.pr.map(Int.init) : nil
+        let pr = prNumber.flatMap { GitHub.cached(repo: repo, number: $0) }
+        let title = pr.map { "pull request #\(prNumber!) \u{201C}\($0.title)\u{201D}" } ?? base?.branch.map { "the changes against \($0)" }
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let workDir = readOnly ? ((try? reviewCheckout(repoRoot: repo)) ?? repo) : repo
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let run = ReviewerRun(reviewer: r, repo: repo, workDir: workDir, files: files, title: title, description: pr?.body)
+                run.onChange = { [weak self, weak run] in
+                    guard let self, let run else { return }
+                    self.updateAgents()
+                    switch run.state {
+                    case let .done(added, skipped):
+                        self.document.reloadThreads()
+                        let also = skipped > 0 ? " (\(skipped) it had reported before)" : ""
+                        self.statusLabel.stringValue = added == 0 ? "\(r.name) found nothing new\(also)." : "\(r.name): \(added) finding\(added == 1 ? "" : "s") to triage\(also)."
+                    case let .failed(m): self.document.onNotice?(m)
+                    case .running: break
+                    }
+                }
+                self.reviewerRun = run
+                self.updateAgents()
+            }
+        }
+    }
+
+    /// Reviewers set to run when a PR opens (`when = "pr_open"`), once per PR per tab.
+    private func runAutoReviewers() {
+        guard ProcessInfo.processInfo.environment["ONRAMP_SELFTEST"] == nil, base?.mode == .pullRequest, let n = choice.pr else { return }
+        let key = "\(n)"
+        guard !autoReviewed.contains(key), let r = ReviewerRun.all(repo: repoPath).first(where: { $0.when == "pr_open" }) else { return }
+        autoReviewed.insert(key)
+        runReviewer(r)
     }
 
     func stopSession() {
@@ -759,7 +809,11 @@ final class ReviewView: NSView, NSPopoverDelegate {
             label = failed.isEmpty ? (finished.count == 1 ? "Agent done" : "Agents done") : (failed.count == 1 ? "\(failed[0].title) failed" : "Agents failed")
             tip = finished.map { "\($0.0.title) \($0.1 ? "finished" : "failed")" }.joined(separator: "\n") + "\nClick for the log."
         }
-        if let s = session {
+        if let run = reviewerRun, run.state == .running { // a reviewer at work outranks the rest
+            color = DiffStyle.accent; pulsing = true
+            label = run.reviewer.name + " · " + (run.activity ?? "reviewing…")
+            tip = "\(run.reviewer.name) is reviewing the whole change. Its findings land as threads for you to keep or dismiss."
+        } else if let s = session {
             switch s.state {
             case .starting, .priming:
                 color = DiffStyle.accent; pulsing = true; label = "Claude priming…"
@@ -907,7 +961,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     /// Open threads where someone else (an agent) spoke last: they're waiting on you.
     var awaitingYou: [Thread] {
         allThreads.filter { t in
-            guard t.status == .open, t.source == nil, activeClaim(thread: t) == nil, let last = t.entries.last(where: { !$0.pending }) else { return false }
+            guard t.status == .open, t.source == nil, t.triage == nil, activeClaim(thread: t) == nil, let last = t.entries.last(where: { !$0.pending }) else { return false }
             return last.author != author
         }
     }
@@ -1445,7 +1499,8 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         let rows = files[i].layout.rows
         let row = rows.first { if case let .line(l, _) = $0.kind { return l >= line } else { return false } } ?? rows.first
         guard let row else { return }
-        let y = tops[i] + row.y - 4 * DiffStyle.lineHeight
+        // A third of the way down: clear of the sticky file header, with room for what it writes below.
+        let y = tops[i] + row.y - AgentCursorView.labelHeight - max(FileLayout.headerHeight + 2 * DiffStyle.lineHeight, clip.bounds.height * 0.3)
         clip.animator().setBoundsOrigin(NSPoint(x: 0, y: max(0, min(y, frame.height - clip.bounds.height))))
         (clip.superview as? NSScrollView)?.reflectScrolledClipView(clip)
         flash(NSRect(x: 0, y: tops[i] + row.y, width: bounds.width, height: row.height))
@@ -1468,7 +1523,9 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     /// Where the agent is editing (from its live session): a Zed-style cursor with its name,
     /// on a tinted line. nil hides it. Following scrolls to it.
-    var agentCursor: (path: String, line: Int?)? { didSet { placeAgentCursor(scroll: true) } }
+    var agentCursor: (path: String, line: Int?)? { didSet { placeAgentCursor(scroll: agentCursor?.line != oldValue?.line || agentCursor?.path != oldValue?.path) } }
+    /// The code the agent is typing at its cursor (streamed, not saved yet).
+    var agentPreview: String? { didSet { if agentPreview != oldValue { placeAgentCursor() } } }
     private var cursorView: AgentCursorView?
 
     private func placeAgentCursor(scroll: Bool = false) {
@@ -1480,7 +1537,9 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         guard let row = rows.first(where: { if case let .line(l, _) = $0.kind { return l >= line } else { return false } }) else { return }
         let v = cursorView ?? AgentCursorView(agent: "Claude", color: AgentColor.of("claude-code"))
         if cursorView == nil { addSubview(v, positioned: .below, relativeTo: hover); cursorView = v }
-        v.frame = NSRect(x: 0, y: tops[i] + row.y - AgentCursorView.labelHeight, width: bounds.width, height: row.height + AgentCursorView.labelHeight)
+        v.preview = agentPreview
+        let height = max(row.height, CGFloat(v.previewLines) * DiffStyle.lineHeight + 4)
+        v.frame = NSRect(x: 0, y: tops[i] + row.y - AgentCursorView.labelHeight, width: bounds.width, height: height + AgentCursorView.labelHeight)
         if scroll, following { follow(file: i, line: line) }
     }
 
@@ -1609,6 +1668,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         func status(_ t: Thread) -> CommentsPanel.Status {
             if t.status == .resolved { return .resolved }
             if let c = activeClaim(thread: t) { return .working(agent: c.agent) }
+            if t.triage == "needed" { return .finding(severity: t.severity) }
             if t.source?.hasPrefix("ci:") == true { return .ci }
             if t.entries.allSatisfy(\.pending) { return .pending }
             if let last = t.entries.last(where: { !$0.pending }), last.author != author { return .needsYou }
@@ -1774,6 +1834,19 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         view.inReview = pendingCount > 0
         view.sendAgent = sendAgentName
         let id = located.thread.id
+        let findingPath = files[i].path
+        view.onKeep = { [weak self] in
+            self?.withFile(findingPath) { i in
+                guard let self else { return }
+                self.threadAction(i) { _ = try keepFinding(repoRoot: self.repoPath, id: id) }
+            }
+        }
+        view.onDismiss = { [weak self] in
+            self?.withFile(findingPath) { i in
+                guard let self else { return }
+                self.threadAction(i) { _ = try dismissFinding(repoRoot: self.repoPath, id: id, author: self.author, note: nil) }
+            }
+        }
         let path = files[i].path
         view.onReplyAndSend = { [weak self] text in
             self?.withFile(path) { i in

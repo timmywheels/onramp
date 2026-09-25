@@ -14,6 +14,7 @@ final class CommentsPanel: NSViewController {
         case needsYou
         case ci
         case working(agent: String)
+        case finding(severity: String?)
     }
 
     enum Filter: Int { case open, resolved, all }
@@ -168,6 +169,7 @@ private final class CommentRow: NSView {
         switch item.status {
         case .needsYou: ("needs you", .systemYellow)
         case .ci: ("CI failing", DiffStyle.deletedAccent)
+        case let .finding(severity): ((severity ?? "finding") + " · triage", CommentMetrics.severityColor(severity))
         case let .working(agent): ("\(agent) · working", AgentColor.of(agent))
         case .pending: ("pending", DiffStyle.accent)
         case .resolved: ("resolved", .secondaryLabelColor)

@@ -29,7 +29,7 @@ cp "$BIN/onramp" "$APP/Contents/MacOS/Onramp"
 RES="$BIN/onramp_onramp.bundle"
 [ -d "$RES/Contents/Resources" ] && RES="$RES/Contents/Resources"            # universal builds nest it
 cp -R "$RES/." "$APP/Contents/Resources/"                                     # fonts, themes, languages, icon
-[ -f "$APP/Contents/Resources/AppIcon.icns" ] && [ -d "$APP/Contents/Resources/Extensions" ] || { echo "resources missing"; exit 1; }
+[ -f "$APP/Contents/Resources/AppIcon.icns" ] && [ -d "$APP/Contents/Resources/Extensions" ] && [ -d "$APP/Contents/Resources/Reviewers" ] || { echo "resources missing"; exit 1; }
 cp -R "$ROOT/integrations" "$APP/Contents/Resources/integrations"           # the Claude Code plugin
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

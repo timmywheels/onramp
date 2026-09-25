@@ -267,18 +267,51 @@ enum SelfTest {
                 let t1 = CACurrentMediaTime()
                 doc.following = true
                 _ = doc.sessionSend?(t, i, line)
-                var seen: [String] = [], sawCursor = false
+                var seen: [String] = [], sawCursor = false, sawPreview = false, sawReply = false
                 while CACurrentMediaTime() - t1 < 90 {
                     try? await Task.sleep(nanoseconds: 100_000_000)
                     if let a = CommentThreadView.activity[t.id], seen.last != a { seen.append(a); log(String(format: "  %.1f s: %@", CACurrentMediaTime() - t1, a)) }
                     if doc.agentCursor != nil { sawCursor = true }
                     let now = try! loadThreads(repoRoot: repo).first { $0.id == t.id }!
+                    if let p = doc.agentPreview, !sawPreview { sawPreview = true; log(String(format: "  %.1f s: code preview at the cursor (%d chars so far)", CACurrentMediaTime() - t1, p.count)) }
+                    if !sawReply, now.claim != nil, now.entries.count > 1 { sawReply = true; log(String(format: "  %.1f s: reply typing into the thread: \u{201C}%@…\u{201D}", CACurrentMediaTime() - t1, String(now.entries.last!.body.prefix(40)))) }
                     if review.session?.state == .ready, now.claim == nil, now.entries.count > 1 || now.status == .resolved {
                         log(String(format: "answered in %.1f s: %@; agent cursor shown: %@; last: %@", CACurrentMediaTime() - t1, "\(now.status)", sawCursor ? "yes" : "no", now.entries.last?.body ?? ""))
                         break
                     }
                 }
                 review.stopSession()
+                NSApp.terminate(nil)
+            }
+            return
+        }
+        if mode == "redteam" { // the built-in red team, end to end: run, triage, run again
+            Task { @MainActor in
+                let doc = review.document, repo = doc.repoRootForTests
+                let all = ReviewerRun.all(repo: repo)
+                log("reviewers: \(all.map { "\($0.id) (\($0.when))" })")
+                guard let red = all.first(where: { $0.id == "red-team" }) else { return log("no red team") }
+                @MainActor func run(_ label: String) async -> [Thread] {
+                    let t0 = CACurrentMediaTime()
+                    review.runReviewer(red)
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                    var last = ""
+                    while review.reviewerRun?.state == .running, CACurrentMediaTime() - t0 < 400 {
+                        if let a = review.reviewerRun?.activity, a != last { last = a; log(String(format: "  %.0f s: %@", CACurrentMediaTime() - t0, a)) }
+                        try? await Task.sleep(nanoseconds: 500_000_000)
+                    }
+                    log(String(format: "%@ finished in %.0f s: %@ — %@", label, CACurrentMediaTime() - t0, "\(review.reviewerRun?.state ?? .running)", review.statusText))
+                    return try! loadThreads(repoRoot: repo).filter { $0.source?.hasPrefix("reviewer:red-team") == true }
+                }
+                let found = await run("first run")
+                for t in found { log("  [\(t.severity ?? "?")] \(t.path):\(t.anchor.line + 1) \(t.entries.first?.body.components(separatedBy: "\n").first ?? "") (triage: \(t.triage ?? "none"))") }
+                log("agents see untriaged findings: \(try! exportMarkdown(repoRoot: repo, includeResolved: false).contains("reviewer") ? "?" : "no")")
+                if found.count >= 2 {
+                    _ = try? keepFinding(repoRoot: repo, id: found[0].id)
+                    _ = try? dismissFinding(repoRoot: repo, id: found[1].id, author: doc.reviewAuthor, note: nil)
+                    log("kept 1, dismissed 1")
+                }
+                _ = await run("second run")
                 NSApp.terminate(nil)
             }
             return
