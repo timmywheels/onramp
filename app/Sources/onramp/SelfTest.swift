@@ -218,6 +218,37 @@ enum SelfTest {
             }
             return
         }
+        if mode == "unfollow" { // what you do while following: which of these stop it?
+            Task { @MainActor in
+                let doc = review.document
+                guard let window = review.window else { return log("no window") }
+                try? await Task.sleep(nanoseconds: 800_000_000)
+                func post(_ e: NSEvent?, _ label: String) async {
+                    doc.following = true
+                    if let e { NSApp.postEvent(e, atStart: false) }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    log("\(label): \(doc.following ? "still following" : "unfollowed")")
+                }
+                func key(_ c: String, _ mods: NSEvent.ModifierFlags = []) -> NSEvent? {
+                    NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: mods, timestamp: 0, windowNumber: window.windowNumber,
+                                     context: nil, characters: c, charactersIgnoringModifiers: c, isARepeat: false, keyCode: 38)
+                }
+                func click(_ v: NSView, _ at: NSPoint) -> NSEvent? {
+                    NSEvent.mouseEvent(with: .leftMouseDown, location: v.convert(at, to: nil), modifierFlags: [], timestamp: 0,
+                                       windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)
+                }
+                let sv = review.scrollView
+                await post(key("j"), "typing a key")
+                await post(key("f", [.command, .option]), "⌥⌘F")
+                await post(click(sv, NSPoint(x: sv.bounds.maxX - 6, y: sv.bounds.midY)), "clicking the scrollbar")
+                await post(click(sv, NSPoint(x: 200, y: sv.bounds.midY)), "clicking in the diff")
+                if let tree = window.contentView?.subviews.first { await post(click(tree, NSPoint(x: 40, y: 200)), "clicking the window's left side (file tree)") }
+                await post(click(review, NSPoint(x: review.bounds.maxX - 60, y: 14)), "clicking the bottom bar")
+                await post(nil, "nothing")
+                NSApp.terminate(nil)
+            }
+            return
+        }
         if mode == "agentcheck" { // how each agent's connection is seen (and where we looked)
             DispatchQueue.global().async {
                 log("path starts: " + AgentIntegration.userPath.split(separator: ":").prefix(3).joined(separator: ":"))

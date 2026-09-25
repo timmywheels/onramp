@@ -80,10 +80,22 @@ final class ReviewView: NSView, NSPopoverDelegate {
         followButton.toolTip = "Follow the agent: jump to what it's editing as it goes (⌥⌘F). Scroll to stop."
         followButton.isHidden = true
         document.onFollowChanged = { [weak self] _ in self?.updateFollowButton() }
-        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
-            // You scrolled: you're driving now.
-            if let self, self.document.following, event.window === self.window,
-               self.scrollView.frame.contains(self.convert(event.locationInWindow, from: nil)) { self.document.following = false }
+        // Like Zed: anything you do in this window (scroll, click, drag the scrollbar, pick a
+        // file, type) means you're driving, so following stops. The bottom bar (Follow, Agent…)
+        // and ⌥⌘F itself don't count. One click or ⌥⌘F follows again.
+        scrollMonitor = NSEvent.addLocalMonitorForEvents(matching: [.scrollWheel, .leftMouseDown, .rightMouseDown, .keyDown]) { [weak self] event in
+            guard let self, self.document.following, event.window === self.window else { return event }
+            let p = self.convert(event.locationInWindow, from: nil)
+            switch event.type {
+            case .keyDown:
+                let mods = event.modifierFlags.intersection([.command, .option, .control, .shift])
+                if mods == [.command, .option], event.charactersIgnoringModifiers?.lowercased() == "f" { return event } // ⌥⌘F toggles
+            case .scrollWheel:
+                if !self.scrollView.frame.contains(p) { return event } // scrolling the tree or side panel isn't moving the diff
+            default:
+                if self.statusBar.frame.contains(p), self.bounds.contains(p) { return event }
+            }
+            self.document.following = false
             return event
         }
         reviewButton.setText("Review changes")
