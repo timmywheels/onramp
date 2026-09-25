@@ -43,7 +43,8 @@ NSGraphicsContext.saveGraphicsState(); tri.addClip() // gloss on the top edge
 NSGradient(colors: [NSColor.white.withAlphaComponent(0.28), NSColor.white.withAlphaComponent(0)])!.draw(in: NSRect(x: 0, y: top - 240 * s, width: px, height: 240 * s), angle: -90)
 NSGraphicsContext.restoreGraphicsState()
 
-// Like a real yield sign: a thin white rim, and a white triangle about half the size, sitting a little high.
+// Like a real yield sign: a thin white rim, and a white triangle half the size, scaled about the
+// incenter (the point equally far from all three sides) so the red band is even all round.
 let env = ProcessInfo.processInfo.environment
 func scaled(_ k: CGFloat, about c: NSPoint, radius: CGFloat) -> NSBezierPath {
     let q = pts.map { NSPoint(x: c.x + ($0.x - c.x) * k, y: c.y + ($0.y - c.y) * k) }
@@ -63,7 +64,7 @@ if env["ICON_RIM"] != "0" { // the white border is the sign's own edge, as on th
 }
 let innerScale = CGFloat(Double(env["ICON_INNER"] ?? "0.5") ?? 0.5)
 if innerScale > 0 {
-    let inner = scaled(innerScale, about: NSPoint(x: cx, y: CGFloat(Double(env["ICON_INNER_Y"] ?? "588") ?? 588) * s), radius: 22)
+    let inner = scaled(innerScale, about: NSPoint(x: cx, y: CGFloat(Double(env["ICON_INNER_Y"] ?? "568.8") ?? 568.8) * s), radius: 22)
     NSGraphicsContext.saveGraphicsState()
     let sh = NSShadow(); sh.shadowColor = NSColor.black.withAlphaComponent(0.25); sh.shadowOffset = NSSize(width: 0, height: -2 * s); sh.shadowBlurRadius = 4 * s
     sh.set()
