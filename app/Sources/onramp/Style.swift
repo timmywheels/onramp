@@ -12,6 +12,7 @@ struct Settings: Codable, Equatable {
     var ghPath = ""                        // GitHub CLI; "" = find it (Homebrew, ~/.local/bin, your shell's PATH)
     var ciComments = true                  // CI failures (check annotations) show up as review threads
     var menuBar = true                     // the yield sign in the menu bar: what your agents are doing
+    var dockIcon = true                    // false: menu bar only (needs menu_bar on)
     var agentPaths: [String: String] = [:] // agent_paths: {"claude": "/path/to/claude"}; unset = found on your shell's PATH
     var agentArgs: [String: String] = [:]  // agent_args: {"codex": "--full-auto"}; replaces the flags Onramp picks for a review run
 
@@ -32,6 +33,7 @@ struct Settings: Codable, Equatable {
         ghPath = try c.decodeIfPresent(String.self, forKey: .ghPath) ?? d.ghPath
         ciComments = try c.decodeIfPresent(Bool.self, forKey: .ciComments) ?? d.ciComments
         menuBar = try c.decodeIfPresent(Bool.self, forKey: .menuBar) ?? d.menuBar
+        dockIcon = try c.decodeIfPresent(Bool.self, forKey: .dockIcon) ?? d.dockIcon
         agentPaths = try c.decodeIfPresent([String: String].self, forKey: .agentPaths) ?? d.agentPaths
         agentArgs = try c.decodeIfPresent([String: String].self, forKey: .agentArgs) ?? d.agentArgs
     }

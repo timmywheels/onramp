@@ -40,7 +40,14 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
     }
 
     @objc private func settingsChanged() {
-        Style.shared.settings.menuBar ? show() : hide()
+        let s = Style.shared.settings
+        s.menuBar ? show() : hide()
+        // No Dock icon only while the menu bar icon is there to come back from.
+        let policy: NSApplication.ActivationPolicy = (s.dockIcon || !s.menuBar) ? .regular : .accessory
+        if NSApp.activationPolicy() != policy {
+            NSApp.setActivationPolicy(policy)
+            if policy == .regular { NSApp.activate(ignoringOtherApps: true) } // its menus come back in front
+        }
     }
 
     private func show() {
@@ -165,10 +172,20 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         let updates = menu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates), keyEquivalent: "")
         updates.target = self
+        let dock = menu.addItem(withTitle: "Hide Dock Icon", action: #selector(toggleDock), keyEquivalent: "")
+        dock.target = self
+        dock.state = Style.shared.settings.dockIcon ? .off : .on
+        dock.toolTip = "Onramp lives in the menu bar only. While the Dock icon is hidden, open windows from here; the app menus (File, Edit…) aren't shown."
         let hide = menu.addItem(withTitle: "Hide Menu Bar Icon", action: #selector(hideIcon), keyEquivalent: "")
         hide.target = self
-        hide.toolTip = "Show it again from View → Show Agents in Menu Bar"
+        hide.toolTip = "Show it again from View → Show Agents in Menu Bar (the Dock icon comes back if it was hidden)"
+        menu.addItem(.separator())
+        let quit = menu.addItem(withTitle: "Quit Onramp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        quit.target = NSApp
     }
+
+    /// Menu bar only (no Dock icon), or both.
+    @objc private func toggleDock() { Style.shared.update { $0.dockIcon.toggle() } }
 
     func menuWillOpen(_ menu: NSMenu) { refresh() } // fresh for next time; this open uses the last scan (≤ 3 s old)
 
@@ -200,7 +217,9 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
         Updater.shared.checkInteractively()
     }
 
-    @objc private func hideIcon() { Style.shared.update { $0.menuBar = false } }
+    @objc private func hideIcon() {
+        Style.shared.update { $0.menuBar = false; $0.dockIcon = true } // never both hidden: there'd be no way back in
+    }
 
     // MARK: Icon
 
@@ -214,10 +233,25 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
             tri.move(to: NSPoint(x: (left + right) / 2, y: top))
             for i in [1, 2, 0] { tri.appendArc(from: pts[i], to: pts[(i + 1) % 3], radius: 1.8) }
             tri.close()
+            // The sign's inner triangle, like the white one on a real yield sign.
+            let c = NSPoint(x: (left + right) / 2, y: 10.4), k: CGFloat = 0.42
+            let inner = NSBezierPath()
+            let q = pts.map { NSPoint(x: c.x + ($0.x - c.x) * k, y: c.y + ($0.y - c.y) * k) }
+            inner.move(to: NSPoint(x: (q[0].x + q[1].x) / 2, y: q[0].y))
+            for i in [1, 2, 0] { inner.appendArc(from: q[i], to: q[(i + 1) % 3], radius: 0.8) }
+            inner.close()
             NSColor.black.set()
-            if working { tri.fill() } else { tri.lineWidth = 1.6; tri.lineJoinStyle = .round; tri.stroke() }
-            // The sign points down, so its bottom-right corner is free for the dot.
-            if dot { NSBezierPath(ovalIn: NSRect(x: 13, y: 1, width: 4.5, height: 4.5)).fill() }
+            if working {
+                tri.fill() // an agent is working: solid
+                if dot { // …and something's waiting on you: the inner triangle cut out
+                    NSGraphicsContext.current?.compositingOperation = .clear
+                    inner.fill()
+                    NSGraphicsContext.current?.compositingOperation = .sourceOver
+                }
+            } else {
+                tri.lineWidth = 1.6; tri.lineJoinStyle = .round; tri.stroke()
+                if dot { inner.fill() } // waiting on you: the inner triangle fills in
+            }
             return true
         }
         image.isTemplate = true
