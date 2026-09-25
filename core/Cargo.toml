@@ -1,0 +1,23 @@
+[package]
+name = "pairprogram-core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["staticlib", "cdylib", "lib"]
+name = "pairprogram_core"
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[dependencies]
+uniffi = { version = "0.32", features = ["cli"] }
+imara-diff = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1

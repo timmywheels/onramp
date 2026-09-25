@@ -1,0 +1,8 @@
+{
+  "name": "pairprogram",
+  "description": "Work through review comments left in the pairprogram app: read them, fix the code, reply or resolve.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Tim Wheeler"
+  }
+}

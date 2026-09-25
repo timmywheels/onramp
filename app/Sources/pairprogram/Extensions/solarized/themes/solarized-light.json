@@ -1,0 +1,12 @@
+{
+  "name": "Solarized Light",
+  "appearance": "light",
+  "colors": {
+    "background": "#fdf6e3", "text": "#586e75", "line_number": "#93a1a1",
+    "added_background": "#85990026", "deleted_background": "#dc322f1f", "deleted_text": "#586e75b3",
+    "fold_background": "#eee8d5", "fold_text": "#839496",
+    "header_background": "#eee8d5", "header_text": "#586e75", "separator": "#e4ddc8",
+    "caret": "#268bd2", "current_line": "#0000000a", "hover": "#00000009",
+    "comment_background": "#eee8d5", "comment_border": "#e4ddc8", "accent": "#268bd2"
+  }
+}

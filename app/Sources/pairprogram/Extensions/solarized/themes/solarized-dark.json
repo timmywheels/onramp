@@ -1,0 +1,12 @@
+{
+  "name": "Solarized Dark",
+  "appearance": "dark",
+  "colors": {
+    "background": "#002b36", "text": "#93a1a1", "line_number": "#586e75",
+    "added_background": "#85990033", "deleted_background": "#dc322f2e", "deleted_text": "#93a1a1b3",
+    "fold_background": "#073642", "fold_text": "#839496",
+    "header_background": "#073642", "header_text": "#eee8d5", "separator": "#0a4050",
+    "caret": "#268bd2", "current_line": "#ffffff0a", "hover": "#ffffff08",
+    "comment_background": "#073642", "comment_border": "#0f4a5a", "accent": "#268bd2"
+  }
+}

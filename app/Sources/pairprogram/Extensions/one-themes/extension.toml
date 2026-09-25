@@ -1,0 +1,7 @@
+id = "one-themes"
+name = "One"
+version = "1.0.0"
+api_version = 1
+description = "One Dark and One Light, in the style of Atom and Zed."
+authors = ["pairprogram"]
+themes = ["themes/one-dark.json", "themes/one-light.json"]

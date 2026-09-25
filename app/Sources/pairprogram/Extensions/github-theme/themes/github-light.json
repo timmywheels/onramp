@@ -1,0 +1,12 @@
+{
+  "name": "GitHub Light",
+  "appearance": "light",
+  "colors": {
+    "background": "#ffffff", "text": "#1f2328", "line_number": "#8c959f",
+    "added_background": "#dafbe1", "deleted_background": "#ffebe9", "deleted_text": "#1f2328b3",
+    "fold_background": "#ddf4ff", "fold_text": "#59636e",
+    "header_background": "#f6f8fa", "header_text": "#1f2328", "separator": "#d1d9e0",
+    "caret": "#0969da", "current_line": "#0000000a", "hover": "#0000000a",
+    "comment_background": "#f6f8fa", "comment_border": "#d1d9e0", "accent": "#0969da"
+  }
+}

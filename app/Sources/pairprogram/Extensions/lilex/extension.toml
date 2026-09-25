@@ -1,0 +1,14 @@
+id = "lilex"
+name = "Lilex"
+version = "2.700.0"
+api_version = 1
+description = "The default code font: a monospace with coding ligatures (SIL Open Font License, see OFL.txt)."
+authors = ["The Lilex Project Authors"]
+fonts = [
+  "fonts/Lilex-Regular.ttf",
+  "fonts/Lilex-Italic.ttf",
+  "fonts/Lilex-Medium.ttf",
+  "fonts/Lilex-SemiBold.ttf",
+  "fonts/Lilex-Bold.ttf",
+  "fonts/Lilex-BoldItalic.ttf",
+]

@@ -1,0 +1,12 @@
+{
+  "name": "One Dark",
+  "appearance": "dark",
+  "colors": {
+    "background": "#282c33", "text": "#c8ccd4", "line_number": "#4e5a5f",
+    "added_background": "#a1c18124", "deleted_background": "#d0727624", "deleted_text": "#c8ccd4b3",
+    "fold_background": "#2f343e", "fold_text": "#838994",
+    "header_background": "#2f343e", "header_text": "#dce0e5", "separator": "#363c46",
+    "caret": "#74ade8", "current_line": "#2f343ebf", "hover": "#ffffff08",
+    "comment_background": "#2f343e", "comment_border": "#464b57", "accent": "#74ade8"
+  }
+}

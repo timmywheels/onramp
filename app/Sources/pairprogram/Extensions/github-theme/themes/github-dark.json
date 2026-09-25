@@ -1,0 +1,12 @@
+{
+  "name": "GitHub Dark",
+  "appearance": "dark",
+  "colors": {
+    "background": "#0d1117", "text": "#e6edf3", "line_number": "#6e7681",
+    "added_background": "#2ea04326", "deleted_background": "#f8514926", "deleted_text": "#e6edf3b3",
+    "fold_background": "#161b22", "fold_text": "#7d8590",
+    "header_background": "#161b22", "header_text": "#e6edf3", "separator": "#30363d",
+    "caret": "#2f81f7", "current_line": "#6e76811a", "hover": "#6e768114",
+    "comment_background": "#161b22", "comment_border": "#30363d", "accent": "#2f81f7"
+  }
+}

@@ -1,0 +1,81 @@
+# pairprogram
+
+A native Mac app for reviewing your AI agent's changes before a human does:
+one endless, editable diff (Zed-style), inline comment threads, and a way for
+any agent to read and resolve those comments.
+
+## Install
+
+    ./scripts/install.sh          # builds and links ~/.local/bin/pairprogram
+
+## Use
+
+    pairprogram                   # from anywhere in a repo; returns right away (like `code .`)
+    pairprogram ~/dev/other-repo  # or point it at a repo
+    pairprogram --wait            # keep the terminal attached until the window closes
+
+- Hover a line and click **+** (or click its line number) to comment. **Comment** posts it now;
+  **Start a review** holds it (and later ones) as *Pending*, like GitHub.
+- **Finish review (N)** in the status bar: add a summary, pick Comment / Approve / Request changes,
+  and choose who to send it to. Submitting publishes the pending comments and can start
+  Claude Code (`claude -p`) or Codex (`codex exec`) in the repo to address them; their fixes and
+  replies show up live. Pending comments are invisible to agents until you submit.
+- **Branch / Uncommitted** (status bar): Branch shows everything on your branch since it
+  forked from the default branch (`origin/HEAD`, else main/master), committed or not, like a PR.
+  Uncommitted shows only what's not committed yet. Saved per repo; agents see the same set.
+- Click any line to edit it in place. ⌘S saves all files.
+- Click a file header to fold it; click "⋯ unchanged lines" to show more context.
+- ⌃⌘S toggles the file tree, ⌘+/⌘− change the font, ⇧⌘R shows resolved comments.
+- **View → Font / Font Ligatures / Theme / Appearance.** The default font is
+  [Lilex](https://github.com/mishamyrt/Lilex) (bundled, OFL). Everything is also in
+  `~/.config/pairprogram/settings.json` (**pairprogram → Settings…**, ⌘,).
+
+## Extensions
+
+Fonts and themes come from extensions: folders with an `extension.toml`. The
+built-in ones live in `app/Sources/pairprogram/Extensions/`; yours go in
+`~/.config/pairprogram/extensions/<id>/` (same id replaces a built-in).
+
+    id = "dracula"
+    name = "Dracula"
+    version = "0.1.0"
+    api_version = 1
+    themes = ["themes/dracula.json"]    # same shape as app/Sources/pairprogram/Extensions/one-themes/themes/*.json
+    fonts = ["fonts/MyFont-Regular.ttf"] # registered for pairprogram only, not system-wide
+
+`pairprogram extensions` lists what loaded and why anything didn't. The
+manifest already reserves what code extensions will need (`runtime =
+"process"` now, `"wasm"` later, and `permissions`); those aren't supported yet.
+
+## Connect your agent (opt-in, MCP)
+
+Click **Connect an agent…** in the status bar. It lists Claude Code, Codex and
+Cursor if installed; nothing is registered until you click **Connect** (and
+**Disconnect** undoes it). Or by hand:
+
+    # Claude Code: a plugin that bundles the MCP server + /pairprogram:address-comments
+    claude plugin marketplace add ~/.config/pairprogram/integrations/claude-code
+    claude plugin install pairprogram@pairprogram
+    # Codex (and anything else that speaks MCP)
+    codex mcp add pairprogram -- pairprogram mcp
+
+Then ask your agent to "address my pairprogram comments", or in Claude Code
+type `/pairprogram:address-comments`. The status bar shows "● claude-code
+connected" while an agent's session is live.
+
+Comments live in `.git/pairprogram/comments.json` (never committed). Agents
+without MCP can use the same CLI:
+
+    pairprogram comments                       # open comments, with code in context
+    pairprogram reply <id> "question"          # answer or ask
+    pairprogram resolve <id> --note "what changed"
+
+MCP tools: `list_comments`, `reply_to_comment`, `resolve_comment`,
+`reopen_comment`, plus the `address_comments` prompt. Replies are signed with
+the agent's name. The app updates live as the agent edits files and answers.
+
+## Layout
+
+- `core/` Rust: git, diff, comment storage + anchoring, extension manifests (UniFFI → Swift)
+- `app/` Swift/AppKit: canvas diff view, NSTextView editor, sidebar, comments, CLI, MCP
+- `integrations/claude-code` Claude Code plugin (skill + bundled MCP server)

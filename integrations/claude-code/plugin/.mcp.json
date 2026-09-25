@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "pairprogram": {
+      "command": "pairprogram",
+      "args": ["mcp"]
+    }
+  }
+}

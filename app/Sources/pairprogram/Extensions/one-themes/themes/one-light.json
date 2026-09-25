@@ -1,0 +1,12 @@
+{
+  "name": "One Light",
+  "appearance": "light",
+  "colors": {
+    "background": "#fafafa", "text": "#242529", "line_number": "#b0b0b2",
+    "added_background": "#669f5926", "deleted_background": "#d3604f1f", "deleted_text": "#242529b3",
+    "fold_background": "#ebebec", "fold_text": "#7e8087",
+    "header_background": "#ebebec", "header_text": "#242529", "separator": "#dfdfe0",
+    "caret": "#5c78e2", "current_line": "#0000000a", "hover": "#00000008",
+    "comment_background": "#f0f0f1", "comment_border": "#c9c9ca", "accent": "#5c78e2"
+  }
+}
