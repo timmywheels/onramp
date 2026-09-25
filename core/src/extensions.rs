@@ -23,6 +23,8 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::syntax::{grammar_names, LanguageConfig};
+
 /// Newest manifest `api_version` this build understands.
 pub const API_VERSION: u32 = 1;
 
@@ -41,6 +43,8 @@ pub struct Extension {
     /// Absolute paths, checked to be inside `dir`.
     pub fonts: Vec<String>,
     pub themes: Vec<String>,
+    /// File types → compiled-in grammar (+ optional highlight query override).
+    pub languages: Vec<LanguageConfig>,
     /// "process" | "wasm" for code extensions; None for declarative ones.
     pub runtime: Option<String>,
     pub permissions: Vec<String>,
@@ -74,9 +78,19 @@ struct Manifest {
     fonts: Vec<String>,
     #[serde(default)]
     themes: Vec<String>,
+    #[serde(default)]
+    languages: Vec<LanguageEntry>,
     runtime: Option<String>,
     #[serde(default)]
     permissions: Vec<String>,
+}
+
+#[derive(Deserialize)]
+struct LanguageEntry {
+    name: String,
+    grammar: String,
+    suffixes: Vec<String>,
+    highlights: Option<String>,
 }
 
 #[uniffi::export]
@@ -125,7 +139,17 @@ fn load(dir: &Path, builtin: bool) -> Result<Extension, String> {
         return Err(format!("unknown permission {p:?} (known: {})", PERMISSIONS.join(", ")));
     }
     let files = |list: &[String]| list.iter().map(|f| inside(dir, f)).collect::<Result<Vec<_>, _>>();
+    let grammars = grammar_names();
+    let mut languages = Vec::new();
+    for l in m.languages {
+        if !grammars.contains(&l.grammar) {
+            return Err(format!("language {:?}: grammar {:?} isn't built in (available: {})", l.name, l.grammar, grammars.join(", ")));
+        }
+        let highlights = l.highlights.as_deref().map(|h| inside(dir, h)).transpose()?;
+        languages.push(LanguageConfig { name: l.name, grammar: l.grammar, suffixes: l.suffixes, highlights });
+    }
     Ok(Extension {
+        languages,
         fonts: files(&m.fonts)?,
         themes: files(&m.themes)?,
         id: m.id,
