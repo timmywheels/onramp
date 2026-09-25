@@ -149,8 +149,9 @@ pub fn sync_ci_threads(repo_root: String, findings: Vec<CiFinding>, complete: bo
     Ok(sync)
 }
 
-/// "This agent is on it": other agents skip claimed threads. Refreshed by the
-/// claimer's replies; gone when resolved or after `CLAIM_TTL` quiet seconds.
+/// "This agent is on it": other agents skip claimed threads. Gone when the
+/// claimer resolves or replies (a reply means it's your turn), when its session
+/// ends, or after `CLAIM_TTL` quiet seconds.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, uniffi::Record)]
 pub struct Claim {
     pub agent: String,
@@ -302,8 +303,8 @@ pub fn add_thread(repo_root: String, path: String, text: String, line: u32, old_
 pub fn reply(repo_root: String, id: String, author: String, body: String, pending: bool) -> Result<Thread, CoreError> {
     modify(&repo_root, |store| {
         let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
-        if let Some(c) = t.claim.as_mut().filter(|c| c.agent == author) {
-            c.at = now(); // still working on it
+        if t.claim.as_ref().is_some_and(|c| c.agent == author) {
+            t.claim = None; // it answered: the thread is back with you, not "working"
         }
         t.entries.push(Entry { author, body, created_at: now(), pending });
         Ok(t.clone())
@@ -679,6 +680,13 @@ mod tests {
         assert!(err.contains("claimed by claude-code"), "{err}");
         claim_thread(root.clone(), t.id.clone(), "claude-code".into()).unwrap(); // re-claiming your own is fine
         assert!(export_markdown(root.clone(), false).unwrap().contains("claimed by claude-code"));
+
+        // Its reply (a question for you) hands the thread back: no longer "working".
+        let asked = reply(root.clone(), t.id.clone(), "claude-code".into(), "which one?".into(), false).unwrap();
+        assert_eq!(asked.claim, None);
+        claim_thread(root.clone(), t.id.clone(), "claude-code".into()).unwrap();
+        // Someone else's reply leaves the claim alone.
+        assert!(reply(root.clone(), t.id.clone(), "you".into(), "the first".into(), false).unwrap().claim.is_some());
 
         // A review with nothing pending still hands the open comment to the agent.
         let r = submit_review(root.clone(), "you".into(), String::new(), Verdict::RequestChanges).unwrap();

@@ -9,7 +9,13 @@ enum MCPServer {
     static func run(repoRoot: String, author fixedAuthor: String?) -> Int32 {
         var author = fixedAuthor ?? "agent"
         var presence: String?
-        defer { if let presence { try? FileManager.default.removeItem(atPath: presence) } }
+        defer {
+            if let presence { try? FileManager.default.removeItem(atPath: presence) }
+            // Session over: anything it still holds goes back, so nothing shows "working" for an agent that's gone.
+            for t in (try? loadThreads(repoRoot: repoRoot)) ?? [] where activeClaim(thread: t)?.agent == author {
+                _ = try? releaseThread(repoRoot: repoRoot, id: t.id, agent: author)
+            }
+        }
         while let line = readLine(strippingNewline: true) {
             guard let data = line.data(using: .utf8),
                   let msg = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
