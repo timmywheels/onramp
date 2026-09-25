@@ -50,9 +50,21 @@ class CapsuleButton: NSButton {
         super.draw(dirtyRect)
     }
 
-    /// Title in the standard capsule font.
-    func setText(_ text: String) {
-        attributedTitle = NSAttributedString(string: text, attributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: .medium)])
+    /// Title in the standard capsule font, optionally with a symbol before it (inline, so
+    /// it sits beside the text instead of on top of it).
+    func setText(_ text: String, symbol: String? = nil, color: NSColor = .labelColor) {
+        let font = NSFont.systemFont(ofSize: 11.5, weight: .medium)
+        let s = NSMutableAttributedString()
+        if let symbol, let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+            .withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 10, weight: .medium).applying(.init(paletteColors: [color]))) {
+            let a = NSTextAttachment()
+            a.image = image
+            a.bounds = NSRect(x: 0, y: (font.capHeight - image.size.height) / 2, width: image.size.width, height: image.size.height)
+            s.append(NSAttributedString(attachment: a))
+            s.append(NSAttributedString(string: " ", attributes: [.font: font]))
+        }
+        s.append(NSAttributedString(string: text, attributes: [.font: font, .foregroundColor: color]))
+        attributedTitle = s
     }
 
     /// Size to the title plus padding.

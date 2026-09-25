@@ -567,6 +567,7 @@ enum SelfTest {
                 if let id = env["ONRAMP_SNAP_THREAD"], let t = try? loadThreads(repoRoot: review.document.repoRootForTests).first(where: { $0.id == id }) {
                     review.document.scrollToThread(t) // like clicking it in the side panel
                 }
+                if env["ONRAMP_SNAP_FOLLOW"] != nil { review.document.following = true }
                 if env["ONRAMP_SNAP_PANEL"] == "prs" { (NSApp.delegate as? AppDelegate)?.showPullRequests(nil) }
                 if let n = env["ONRAMP_SNAP_OPEN_PR"].flatMap(Int.init) { // catch the loading states mid-flight
                     (NSApp.delegate as? AppDelegate)?.showPullRequests(nil)

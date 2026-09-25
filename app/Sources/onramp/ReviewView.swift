@@ -74,7 +74,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
         progress.toolTip = "Files marked Viewed"
         agentButton.target = self
         agentButton.action = #selector(agentButtonClicked)
-        followButton.setText("Follow")
+        followButton.setText("Follow", symbol: "eye", color: .secondaryLabelColor)
         followButton.target = self
         followButton.action = #selector(toggleFollow)
         followButton.toolTip = "Follow the agent: jump to what it's editing as it goes (⌥⌘F). Scroll to stop."
@@ -334,10 +334,10 @@ final class ReviewView: NSView, NSPopoverDelegate {
         let show = working || document.following
         if followButton.isHidden == show { followButton.isHidden = !show; needsLayout = true }
         let title = document.following ? "Following" : "Follow"
-        if followButton.title != title { followButton.setText(title); needsLayout = true }
-        followButton.contentTintColor = document.following ? DiffStyle.accent : nil
-        followButton.image = NSImage(systemSymbolName: document.following ? "eye.fill" : "eye", accessibilityDescription: nil)?
-            .withSymbolConfiguration(.init(pointSize: 10, weight: .medium))
+        if followButton.title != title {
+            followButton.setText(title, symbol: document.following ? "eye.fill" : "eye", color: document.following ? .labelColor : .secondaryLabelColor)
+            needsLayout = true
+        }
         // Stop following once the work you were watching is done (not before any has started).
         if working || QuickSend.anyRunning { followSawWork = true }
         else if document.following, followSawWork { followSawWork = false; document.following = false }
