@@ -1,7 +1,7 @@
 //! Review comments: threads anchored to lines, stored in
-//! `<git-dir>/pairprogram/comments.json` so they never get committed.
+//! `<git-dir>/onramp/comments.json` so they never get committed.
 //!
-//! The app and the `pairprogram` CLI (what agents use) share this code, so a
+//! The app and the `onramp` CLI (what agents use) share this code, so a
 //! comment written in either shows up in both. Writes are load-modify-save
 //! under a lock file, so the app and an agent can't clobber each other.
 
@@ -197,7 +197,7 @@ pub(crate) fn store_dir(repo_root: &str) -> Result<PathBuf, CoreError> {
     if !out.status.success() {
         return Err(CoreError::Git { message: String::from_utf8_lossy(&out.stderr).trim().to_string() });
     }
-    Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("pairprogram"))
+    Ok(PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("onramp"))
 }
 
 /// Path of the comments file (the app watches it for changes made by agents).
@@ -553,10 +553,10 @@ pub fn export_markdown(repo_root: String, include_resolved: bool) -> Result<Stri
         md.push_str("No open comments.\n");
         return Ok(md);
     }
-    md.push_str("Claim a comment before working on it (`pairprogram claim <id>`) and skip ones another agent has claimed.\n");
+    md.push_str("Claim a comment before working on it (`onramp claim <id>`) and skip ones another agent has claimed.\n");
     md.push_str("Address each open comment by editing the code. Then resolve it with a short note:\n");
-    md.push_str("`pairprogram resolve <id> --note \"what you changed\"`\n");
-    md.push_str("If you disagree or need input, reply instead: `pairprogram reply <id> \"...\"`\n\n");
+    md.push_str("`onramp resolve <id> --note \"what you changed\"`\n");
+    md.push_str("If you disagree or need input, reply instead: `onramp reply <id> \"...\"`\n\n");
     for l in &located {
         let t = &l.thread;
         let status = match active_claim(t.clone()) {

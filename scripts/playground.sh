@@ -3,12 +3,12 @@
 # real work: an "origin" with main, a feature branch with several commits,
 # uncommitted edits, a new untracked file and a deleted one, in several
 # languages. Re-run any time to reset it (it's rebuilt from scratch).
-#   ./scripts/playground.sh            # ~/dev/pairprogram-playground
+#   ./scripts/playground.sh            # ~/dev/onramp-playground
 #   ./scripts/playground.sh <dir>      # somewhere else
 set -euo pipefail
-DIR="${1:-$HOME/dev/pairprogram-playground}"
+DIR="${1:-$HOME/dev/onramp-playground}"
 ORIGIN="$DIR.origin.git"
-case "$DIR" in */pairprogram-playground*|*playground*) ;; *) echo "refusing to reset $DIR (name must contain 'playground')"; exit 1 ;; esac
+case "$DIR" in */onramp-playground*|*playground*) ;; *) echo "refusing to reset $DIR (name must contain 'playground')"; exit 1 ;; esac
 rm -rf "$DIR" "$ORIGIN"
 git init -q --bare -b main "$ORIGIN"
 git clone -q "$ORIGIN" "$DIR" 2>/dev/null
@@ -529,4 +529,4 @@ EOF
 echo "playground: $DIR"
 echo "  branch feat/partial-payments: $(git rev-list --count origin/main..HEAD) commits ahead of origin/main"
 echo "  $(git diff --name-only origin/main | wc -l | tr -d ' ') files changed vs origin/main, $(git status --short | wc -l | tr -d ' ') uncommitted"
-[ -n "${PP_NO_OPEN:-}" ] || pairprogram "$DIR"
+[ -n "${ONRAMP_NO_OPEN:-}" ] || onramp "$DIR"

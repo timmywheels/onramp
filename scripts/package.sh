@@ -4,11 +4,11 @@
 #   ./scripts/package.sh                 # full release
 #   ./scripts/package.sh --no-notarize   # signed, not notarized (quick local check)
 # Needs: the Developer ID certificate in your keychain, and a notarytool
-# profile: xcrun notarytool store-credentials pairprogram --apple-id … --team-id …
+# profile: xcrun notarytool store-credentials onramp --apple-id … --team-id …
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IDENTITY="${IDENTITY:-Developer ID Application: Timothy Wheeler (S3RY6Q3EW2)}"
-PROFILE="${NOTARY_PROFILE:-pairprogram}"
+PROFILE="${NOTARY_PROFILE:-onramp}"
 VERSION="${VERSION:-0.1.0}"
 BUILD="$(git -C "$ROOT" rev-list --count HEAD)"
 NOTARIZE=1; [ "${1:-}" = "--no-notarize" ] && NOTARIZE=0
@@ -21,12 +21,12 @@ step "Build (universal)"
 "$ROOT/scripts/build-core.sh"
 (cd "$ROOT/app" && swift build -c release --arch arm64 --arch x86_64 2>&1 | grep -E "error|warning: .*(deprecated|unused)|Build complete" || true)
 BIN="$ROOT/app/.build/apple/Products/Release"
-lipo -info "$BIN/pairprogram"
+lipo -info "$BIN/onramp"
 
 step "Assemble Onramp.app"
 rm -rf "$DIST" && mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN/pairprogram" "$APP/Contents/MacOS/Onramp"
-RES="$BIN/pairprogram_pairprogram.bundle"
+cp "$BIN/onramp" "$APP/Contents/MacOS/Onramp"
+RES="$BIN/onramp_onramp.bundle"
 [ -d "$RES/Contents/Resources" ] && RES="$RES/Contents/Resources"            # universal builds nest it
 cp -R "$RES/." "$APP/Contents/Resources/"                                     # fonts, themes, languages, icon
 [ -f "$APP/Contents/Resources/AppIcon.icns" ] && [ -d "$APP/Contents/Resources/Extensions" ] || { echo "resources missing"; exit 1; }
@@ -38,7 +38,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <dict>
   <key>CFBundleName</key><string>Onramp</string>
   <key>CFBundleDisplayName</key><string>Onramp</string>
-  <key>CFBundleIdentifier</key><string>com.timwheeler.pairprogram</string>
+  <key>CFBundleIdentifier</key><string>com.timwheeler.onramp</string>
   <key>CFBundleExecutable</key><string>Onramp</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
@@ -51,8 +51,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSHumanReadableCopyright</key><string>© $(date +%Y) Tim Wheeler</string>
   <key>CFBundleURLTypes</key>
   <array><dict>
-    <key>CFBundleURLName</key><string>com.timwheeler.pairprogram</string>
-    <key>CFBundleURLSchemes</key><array><string>onramp</string><string>pairprogram</string></array>
+    <key>CFBundleURLName</key><string>com.timwheeler.onramp</string>
+    <key>CFBundleURLSchemes</key><array><string>onramp</string></array>
   </dict></array>
   <key>CFBundleDocumentTypes</key>
   <array><dict>
@@ -79,14 +79,7 @@ if [ "$NOTARIZE" = 1 ]; then
   xcrun stapler staple "$APP"
   rm -f "$DIST/notarize.zip"
 fi
-# LEGACY_ZIP=1: name the app PairProgram.app inside the zip, for updaters from
-# before the rename (0.2.0 looks for that name; the app renames itself on launch).
-if [ "${LEGACY_ZIP:-0}" = 1 ]; then
-  mkdir -p "$DIST/legacy" && cp -R "$APP" "$DIST/legacy/PairProgram.app"
-  ditto -c -k --keepParent "$DIST/legacy/PairProgram.app" "$ZIP" && rm -rf "$DIST/legacy"
-else
-  ditto -c -k --keepParent "$APP" "$ZIP"
-fi
+ditto -c -k --keepParent "$APP" "$ZIP"
 
 step "Make the DMG"
 STAGE="$DIST/dmg"

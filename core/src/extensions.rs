@@ -128,7 +128,7 @@ fn load(dir: &Path, builtin: bool) -> Result<Extension, String> {
         return Err(format!("id {:?} must be lowercase letters, digits and dashes", m.id));
     }
     if m.api_version == 0 || m.api_version > API_VERSION {
-        return Err(format!("needs api_version {}, this pairprogram supports up to {API_VERSION}", m.api_version));
+        return Err(format!("needs api_version {}, this onramp supports up to {API_VERSION}", m.api_version));
     }
     match m.runtime.as_deref() {
         None => {}

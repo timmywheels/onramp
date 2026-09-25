@@ -11,6 +11,6 @@ for size in 16 32 128 256 512; do
   "$TMP/make-icon" "$SET/icon_${size}x${size}.png" "$size"
   "$TMP/make-icon" "$SET/icon_${size}x${size}@2x.png" "$((size * 2))"
 done
-iconutil -c icns "$SET" -o "$ROOT/app/Sources/pairprogram/AppIcon.icns"
+iconutil -c icns "$SET" -o "$ROOT/app/Sources/onramp/AppIcon.icns"
 "$TMP/make-icon" "$ROOT/design/icon-1024.png" 1024
-echo "built app/Sources/pairprogram/AppIcon.icns"
+echo "built app/Sources/onramp/AppIcon.icns"

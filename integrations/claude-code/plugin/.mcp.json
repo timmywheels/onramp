@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "pairprogram": {
+    "onramp": {
       "command": "onramp",
       "args": ["mcp"]
     }

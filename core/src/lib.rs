@@ -1,4 +1,4 @@
-//! pairprogram-core: everything pairprogram computes. The Swift app only draws.
+//! onramp-core: everything onramp computes. The Swift app only draws.
 //!
 //! Modules grow here by feature (diff, repo, later comments/agent); this file
 //! re-exports what Swift sees through UniFFI.

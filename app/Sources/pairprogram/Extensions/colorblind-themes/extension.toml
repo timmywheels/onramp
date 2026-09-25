@@ -1,7 +1,0 @@
-id = "colorblind-themes"
-name = "Color-blind friendly"
-version = "1.0.0"
-api_version = 1
-description = "Deuteranopia/protanopia themes: blue for added, orange for deleted, and a syntax palette that never relies on red vs green."
-authors = ["pairprogram"]
-themes = ["themes/deuteranopia-dark.json", "themes/deuteranopia-light.json"]

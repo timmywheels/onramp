@@ -1,7 +1,7 @@
 //! Review context: files and folders the user wants agents to read before
 //! working on their comments (review standards, architecture notes, …).
 //!
-//! Sources live in two lists: this repo's (`<git-dir>/pairprogram/context.json`,
+//! Sources live in two lists: this repo's (`<git-dir>/onramp/context.json`,
 //! never committed) and the user's for all repos (`<config>/context.json`).
 //! Agents get the bundled text through MCP (`get_review_context`) or the CLI.
 

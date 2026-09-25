@@ -112,7 +112,7 @@ mod tests {
 
     #[test]
     fn loads_big_review_fast() {
-        let Ok(root) = std::env::var("PP_BENCH_REPO") else { return };
+        let Ok(root) = std::env::var("ONRAMP_BENCH_REPO") else { return };
         let t = std::time::Instant::now();
         let files = load_review(root, "HEAD".into(), None).unwrap();
         eprintln!("load_review: {} files in {:?}", files.len(), t.elapsed());

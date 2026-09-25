@@ -2,13 +2,13 @@
 import PackageDescription
 
 let package = Package(
-    name: "pairprogram",
+    name: "onramp",
     platforms: [.macOS(.v14)],
     targets: [
-        .binaryTarget(name: "pairprogram_coreFFI", path: "Frameworks/pairprogram_core.xcframework"),
+        .binaryTarget(name: "onramp_coreFFI", path: "Frameworks/onramp_core.xcframework"),
         .executableTarget(
-            name: "pairprogram",
-            dependencies: ["pairprogram_coreFFI"],
+            name: "onramp",
+            dependencies: ["onramp_coreFFI"],
             resources: [.copy("Extensions"), .copy("AppIcon.icns")] // built-in extensions (fonts, themes, languages), the app icon
         ),
     ]

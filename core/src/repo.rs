@@ -37,7 +37,7 @@ pub enum ReviewMode {
     Uncommitted,
     /// One commit: its parent vs the commit (read-only; not on disk).
     Commit,
-    /// A pull request, fetched to `refs/pairprogram/pr/<n>`: where it left its
+    /// A pull request, fetched to `refs/onramp/pr/<n>`: where it left its
     /// base branch vs its head, like GitHub shows it (read-only).
     PullRequest,
 }
@@ -195,7 +195,7 @@ pub fn list_worktrees(repo_root: String) -> Result<Vec<Worktree>, CoreError> {
             if let Some(p) = line.strip_prefix("worktree ") { path = Some(p.to_string()) }
             if let Some(b) = line.strip_prefix("branch ") { branch = Some(b.trim_start_matches("refs/heads/").to_string()) }
         }
-        if let Some(path) = path.filter(|p| !p.contains("/pairprogram/checkouts/")) { // agents' private checkouts aren't yours
+        if let Some(path) = path.filter(|p| !p.contains("/onramp/checkouts/")) { // agents' private checkouts aren't yours
             let is_current = std::fs::canonicalize(&path).map(|p| p == here).unwrap_or(false);
             trees.push(Worktree { path, branch, is_current });
         }
@@ -250,10 +250,10 @@ fn parse_commits(out: &[u8]) -> Vec<CommitInfo> {
 
 /// Where a fetched pull request's head lives (never a branch of yours).
 fn pr_ref(n: u32) -> String {
-    format!("refs/pairprogram/pr/{n}")
+    format!("refs/onramp/pr/{n}")
 }
 
-/// Fetch pull request `n` (head into `refs/pairprogram/pr/<n>`) and its base
+/// Fetch pull request `n` (head into `refs/onramp/pr/<n>`) and its base
 /// branch, from `remote`. Touches no branch, no working tree, no checkout.
 #[uniffi::export]
 pub fn fetch_pull_request(repo_root: String, remote: String, number: u32, base_branch: String) -> Result<(), CoreError> {
@@ -267,7 +267,7 @@ pub fn fetch_pull_request(repo_root: String, remote: String, number: u32, base_b
 }
 
 /// A private, detached checkout of the commit being reviewed (a PR's head or
-/// one commit), for agents to read: `<git-dir>/pairprogram/checkouts/<sha>`.
+/// one commit), for agents to read: `<git-dir>/onramp/checkouts/<sha>`.
 /// Not a branch, so there's nothing to push; your own checkout is untouched.
 #[uniffi::export]
 pub fn review_checkout(repo_root: String) -> Result<String, CoreError> {
@@ -275,7 +275,7 @@ pub fn review_checkout(repo_root: String) -> Result<String, CoreError> {
     let Some(sha) = base.target else { return Err(CoreError::Git { message: "the working tree is already checked out".into() }) };
     let common = stdout(git(&repo_root, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?)
         .ok_or_else(|| CoreError::Git { message: "not a git repository".into() })?;
-    let dir = std::path::Path::new(&common).join("pairprogram/checkouts").join(&sha[..12.min(sha.len())]);
+    let dir = std::path::Path::new(&common).join("onramp/checkouts").join(&sha[..12.min(sha.len())]);
     let path = dir.display().to_string();
     if dir.join(".git").exists() {
         // Reuse it; make sure it's exactly the reviewed commit (an agent can't have changed it, but be sure).
@@ -546,7 +546,7 @@ mod tests {
 
         // Agents get a private, detached checkout of the PR; mine stays as it was.
         let checkout = review_checkout(root.clone()).unwrap();
-        assert!(checkout.contains("/pairprogram/checkouts/"), "{checkout}");
+        assert!(checkout.contains("/onramp/checkouts/"), "{checkout}");
         assert_eq!(std::fs::read_to_string(std::path::Path::new(&checkout).join("a.txt")).unwrap(), "two\n");
         let head = Command::new("git").args(["branch", "--show-current"]).current_dir(&checkout).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), ""); // detached: no branch to push

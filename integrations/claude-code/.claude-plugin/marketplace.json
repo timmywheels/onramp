@@ -1,13 +1,13 @@
 {
-  "name": "pairprogram",
+  "name": "onramp",
   "owner": {
-    "name": "pairprogram"
+    "name": "onramp"
   },
   "plugins": [
     {
-      "name": "pairprogram",
+      "name": "onramp",
       "source": "./plugin",
-      "description": "Review comments from the Onramp app: /pairprogram:address-comments plus the pairprogram MCP server."
+      "description": "Review comments from the Onramp app: /onramp:address-comments plus the onramp MCP server."
     }
   ],
   "description": "Onramp: review your agent's changes in a native Mac app and hand the comments back."

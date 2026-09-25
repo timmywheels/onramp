@@ -10,7 +10,7 @@ any agent to read and resolve those comments.
 
 ## Try it on a playground repo
 
-    ./scripts/playground.sh    # (re)builds ~/dev/pairprogram-playground and opens it
+    ./scripts/playground.sh    # (re)builds ~/dev/onramp-playground and opens it
 
 A PR-shaped repo: `feat/partial-payments` is 4 commits ahead of `origin/main`,
 with uncommitted edits, an untracked file and a deleted one, across TypeScript,
@@ -38,19 +38,19 @@ TSX, Rust, Go, Python, CSS and YAML. Re-run it any time to reset.
 - ⌃⌘S toggles the file tree, ⌘+/⌘− change the font, ⇧⌘R shows resolved comments.
 - **View → Font / Font Ligatures / Theme / Appearance.** The default font is
   [Lilex](https://github.com/mishamyrt/Lilex) (bundled, OFL). Everything is also in
-  `~/.config/pairprogram/settings.json` (**Onramp → Settings…**, ⌘,).
+  `~/.config/onramp/settings.json` (**Onramp → Settings…**, ⌘,).
 
 ## Extensions
 
 Fonts and themes come from extensions: folders with an `extension.toml`. The
-built-in ones live in `app/Sources/pairprogram/Extensions/`; yours go in
-`~/.config/pairprogram/extensions/<id>/` (same id replaces a built-in).
+built-in ones live in `app/Sources/onramp/Extensions/`; yours go in
+`~/.config/onramp/extensions/<id>/` (same id replaces a built-in).
 
     id = "dracula"
     name = "Dracula"
     version = "0.1.0"
     api_version = 1
-    themes = ["themes/dracula.json"]    # same shape as app/Sources/pairprogram/Extensions/one-themes/themes/*.json
+    themes = ["themes/dracula.json"]    # same shape as app/Sources/onramp/Extensions/one-themes/themes/*.json
     fonts = ["fonts/MyFont-Regular.ttf"] # registered for Onramp only, not system-wide
 
 `onramp extensions` lists what loaded and why anything didn't. The
@@ -61,8 +61,8 @@ manifest already reserves what code extensions will need (`runtime =
 
 **Review → Context…** (⌘K, or the 📚 toolbar button): files and folders agents read before working
 on your comments — review standards, architecture notes, a private checklist. Add them with the
-file picker or by dropping them in. Each is *This repo* (kept in `.git/pairprogram/`, never
-committed) or *All repos* (`~/.config/pairprogram/`). Folders include their text files; there are
+file picker or by dropping them in. Each is *This repo* (kept in `.git/onramp/`, never
+committed) or *All repos* (`~/.config/onramp/`). Folders include their text files; there are
 size limits so agents get guidance, not a dump. Agents get it via the `get_review_context` MCP
 tool; `onramp context` prints it.
 
@@ -72,17 +72,17 @@ Click **Connect an agent…** in the status bar. It lists Claude Code, Codex and
 Cursor if installed; nothing is registered until you click **Connect** (and
 **Disconnect** undoes it). Or by hand:
 
-    # Claude Code: a plugin that bundles the MCP server + /pairprogram:address-comments
-    claude plugin marketplace add ~/.config/pairprogram/integrations/claude-code
-    claude plugin install pairprogram@pairprogram
+    # Claude Code: a plugin that bundles the MCP server + /onramp:address-comments
+    claude plugin marketplace add ~/.config/onramp/integrations/claude-code
+    claude plugin install onramp@onramp
     # Codex (and anything else that speaks MCP)
-    codex mcp add pairprogram -- onramp mcp
+    codex mcp add onramp -- onramp mcp
 
 Then ask your agent to "address my Onramp comments", or in Claude Code
-type `/pairprogram:address-comments`. The status bar shows "● claude-code
+type `/onramp:address-comments`. The status bar shows "● claude-code
 connected" while an agent's session is live.
 
-Comments live in `.git/pairprogram/comments.json` (never committed). Agents
+Comments live in `.git/onramp/comments.json` (never committed). Agents
 without MCP can use the same CLI:
 
     onramp comments                       # open comments, with code in context

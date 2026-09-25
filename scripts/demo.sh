@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Creates a throwaway git repo with a realistic uncommitted diff and opens
-# pairprogram on it. Re-run any time to reset it.
-#   ./scripts/demo.sh            # repo in $TMPDIR/pairprogram-demo
+# onramp on it. Re-run any time to reset it.
+#   ./scripts/demo.sh            # repo in $TMPDIR/onramp-demo
 #   ./scripts/demo.sh <dir>      # somewhere else
 set -euo pipefail
-DIR="${1:-${TMPDIR:-/tmp}/pairprogram-demo}"
+DIR="${1:-${TMPDIR:-/tmp}/onramp-demo}"
 rm -rf "$DIR" && mkdir -p "$DIR" && cd "$DIR"
 git init -q
 git config user.name "${GIT_AUTHOR_NAME:-$(git config --global user.name || echo you)}"
@@ -83,7 +83,7 @@ EOF
 cat > README.md <<'EOF'
 # todo-api
 
-A tiny todo API used to try pairprogram.
+A tiny todo API used to try onramp.
 EOF
 git add -A && git commit -qm "initial todo api"
 
@@ -159,8 +159,8 @@ test("hides done todos by default", async () => {
   expect(await listTodos("u1")).not.toContainEqual(expect.objectContaining({ id: todo.id }));
 });
 EOF
-sed -i '' 's/A tiny todo API used to try pairprogram./A tiny todo API used to try pairprogram.\n\nNow with validation, updates, and rate limiting./' README.md
+sed -i '' 's/A tiny todo API used to try onramp./A tiny todo API used to try onramp.\n\nNow with validation, updates, and rate limiting./' README.md
 
 echo "demo repo: $DIR"
 git status --short
-[ -n "${PP_NO_OPEN:-}" ] || pairprogram "$DIR"
+[ -n "${ONRAMP_NO_OPEN:-}" ] || onramp "$DIR"

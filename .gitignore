@@ -2,6 +2,6 @@ core/target/
 app/.build/
 app/.swiftpm/
 app/Frameworks/
-app/Sources/pairprogram/Generated/
+app/Sources/onramp/Generated/
 .DS_Store
 dist/
