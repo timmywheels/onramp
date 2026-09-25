@@ -74,7 +74,7 @@ tool; `onramp context` prints it.
 
 ## Connect your agent (opt-in, MCP)
 
-Click **Connect an agent…** in the status bar. It lists Claude Code, Codex and
+Click **Agent** in the bottom bar. It lists Claude Code, Codex and
 Cursor if installed; nothing is registered until you click **Connect** (and
 **Disconnect** undoes it). Or by hand:
 
@@ -95,8 +95,9 @@ without MCP can use the same CLI:
     onramp reply <id> "question"          # answer or ask
     onramp resolve <id> --note "what changed"
 
-MCP tools: `list_comments`, `reply_to_comment`, `resolve_comment`,
-`reopen_comment`, plus the `address_comments` prompt. Replies are signed with
+MCP tools: `list_comments`, `get_review_context`, `claim_comment`,
+`reply_to_comment`, `resolve_comment`, `reopen_comment`, `release_comment`,
+plus the `address_comments` prompt. Replies are signed with
 the agent's name. The app updates live as the agent edits files and answers.
 
 ## Performance

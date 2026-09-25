@@ -43,6 +43,52 @@ That's the loop. No IDE, no copy-pasting between a PR page and a terminal.
 Then click **Agent** in the bottom bar, connect your agent, and ask it to
 "address my Onramp comments".
 
+## Connect your agent (MCP)
+
+Onramp comes with an MCP server, `onramp mcp`. Through it your agent reads
+your comments, answers in the thread, and resolves what it fixed. The
+**Agent** button sets this up in one click; to do it by hand:
+
+1. Put the `onramp` command on your PATH: **Onramp → Install Command Line Tool…**
+   (it links `~/.local/bin/onramp`).
+2. Register the server with your agent:
+
+   ```sh
+   # Claude Code: the plugin (MCP server + the /onramp:address-comments command)
+   claude plugin marketplace add ~/.config/onramp/integrations/claude-code
+   claude plugin install onramp@onramp
+
+   # …or just the MCP server
+   claude mcp add onramp -- onramp mcp
+
+   # Codex
+   codex mcp add onramp -- onramp mcp
+   ```
+
+   Cursor and other MCP clients (Cursor's file is `~/.cursor/mcp.json`):
+
+   ```json
+   { "mcpServers": { "onramp": { "command": "onramp", "args": ["mcp"] } } }
+   ```
+
+   If the client can't find `onramp`, use the full path, e.g.
+   `/Users/you/.local/bin/onramp`.
+3. In your repo, ask your agent to "address my Onramp comments" (in Claude
+   Code: `/onramp:address-comments`).
+
+| Tool | What the agent does with it |
+|---|---|
+| `list_comments` | Reads the open comments, with the code each one is on |
+| `get_review_context` | Reads the standards and files you picked as review context |
+| `claim_comment` | Takes a thread, so other agents skip it |
+| `reply_to_comment` | Asks a question or explains a change in the thread |
+| `resolve_comment` | Marks a thread done, with a note on what changed |
+| `reopen_comment` | Reopens a resolved thread |
+| `release_comment` | Gives a claimed thread back |
+
+No MCP? The same actions are plain commands: `onramp comments`,
+`onramp reply <id> "…"`, `onramp resolve <id> --note "…"`.
+
 ---
 
 Everything else (settings, themes, extensions, the `onramp` command, building
