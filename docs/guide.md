@@ -45,6 +45,23 @@ TSX, Rust, Go, Python, CSS and YAML. Re-run it any time to reset.
 - **View → Font / Font Ligatures / Theme / Appearance.** The default font is
   [Lilex](https://github.com/mishamyrt/Lilex) (bundled, OFL). Everything is also in
   `~/.config/onramp/settings.json` (**Onramp → Settings…**, ⌘,).
+- **Where your agents are, and how they run.** Onramp finds `claude` and `codex`
+  on your terminal's PATH (including `~/.zshrc`). If it can't, click **Agent**,
+  then **Choose…** next to it. Or set them yourself, along with the flags a
+  review run uses:
+
+  ```json
+  {
+    "agent_paths": { "claude": "~/.claude/local/claude", "codex": "/opt/homebrew/bin/codex" },
+    "agent_args":  { "codex": "--full-auto" },
+    "gh_path": "/opt/homebrew/bin/gh"
+  }
+  ```
+
+  Without `agent_args`, Codex gets what the installed version supports
+  (`--approve-for-me`, else `--full-auto`, else `--sandbox workspace-write`), and
+  Claude gets `--permission-mode acceptEdits` with only the file and Onramp tools
+  allowed. Each run's exact command is at the top of its log.
 
 ## Extensions
 

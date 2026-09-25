@@ -56,15 +56,18 @@ final class AgentRunner {
         let q = "'" + prompt.replacingOccurrences(of: "'", with: "'\\''") + "'"
         switch target {
         case .claude:
+            let claude = AgentTools.quoted("claude") ?? "claude" // not found: the run's log says so
             let session = resume.map { "--resume \($0)" } ?? "--session-id \(newSession)"
             if readOnly {
-                return "claude -p \(q) \(session) --allowedTools '\(claudeReadOnlyTools)' --disallowedTools 'Edit,Write,NotebookEdit,Bash'"
+                return "\(claude) -p \(q) \(session) --allowedTools '\(claudeReadOnlyTools)' --disallowedTools 'Edit,Write,NotebookEdit,Bash'"
             }
-            return "claude -p \(q) \(session) --permission-mode acceptEdits --allowedTools '\(claudeTools)'"
+            let flags = AgentTools.args["claude"].flatMap { $0.isEmpty ? nil : $0 } ?? "--permission-mode acceptEdits --allowedTools '\(claudeTools)'"
+            return "\(claude) -p \(q) \(session) \(flags)"
         case .codex:
+            let codex = AgentTools.quoted("codex") ?? "codex"
             let sandbox = readOnly ? "read-only" : "workspace-write"
-            if let resume { return "codex exec resume \(resume) -c sandbox_mode='\"\(sandbox)\"' \(q)" }
-            return readOnly ? "codex exec --sandbox read-only \(q)" : "codex exec --sandbox workspace-write --approve-for-me \(q)"
+            if let resume { return "\(codex) exec resume \(resume) -c sandbox_mode='\"\(sandbox)\"' \(q)" } // resume only takes -c
+            return readOnly ? "\(codex) exec --sandbox read-only \(q)" : "\(codex) exec \(AgentTools.codexWriteFlags()) \(q)"
         case .none: return nil
         }
     }
@@ -91,6 +94,19 @@ final class AgentRunner {
         let log = (try? commentsPath(repoRoot: repo)).map { URL(fileURLWithPath: $0).deletingLastPathComponent().appendingPathComponent("agent-run-\(target.rawValue).log") }
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("onramp-agent-run-\(target.rawValue).log")
         logURL = log
+        // Not found: say so and how to fix it, instead of a shell's "command not found".
+        let tool = target == .claude ? "claude" : "codex"
+        guard AgentTools.path(tool) != nil else {
+            let why = AgentTools.paths[tool].flatMap { $0.isEmpty ? nil : $0 }.map { "agent_paths in settings.json points at \($0), which isn't there or can't run." }
+                ?? "It isn't on your shell's PATH (\(AgentIntegration.userPath))."
+            FileManager.default.createFile(atPath: log.path, contents: Data("""
+            Couldn't find the \(tool) command. \(why)
+            Fix: click Agent in the bottom bar, then Choose… next to \(target.title), and pick it (run `which \(tool)` in a terminal to see where it is).
+
+            """.utf8))
+            state = .finished(target, ok: false)
+            return
+        }
         let note = Self.continuesSession(repo: repo) && wanted == nil ? "# no earlier session to continue: starting a new one\n" : ""
         FileManager.default.createFile(atPath: log.path, contents: Data("\(note)$ \(command)\n\n".utf8))
         let handle = try? FileHandle(forWritingTo: log)
@@ -98,13 +114,12 @@ final class AgentRunner {
 
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        p.arguments = ["-lc", command] // login shell: same PATH as your terminal
+        p.arguments = ["-c", command]
         p.currentDirectoryURL = URL(fileURLWithPath: checkout ?? repo)
-        if checkout != nil { // their onramp MCP server / CLI must use this review, not the checkout
-            var env = ProcessInfo.processInfo.environment
-            env["ONRAMP_REPO"] = repo
-            p.environment = env
-        }
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = AgentIntegration.userPath // your terminal's PATH: agents need node, git, … too
+        if checkout != nil { env["ONRAMP_REPO"] = repo } // their onramp MCP server / CLI must use this review, not the checkout
+        p.environment = env
         p.standardInput = FileHandle.nullDevice
         p.standardOutput = handle
         p.standardError = handle

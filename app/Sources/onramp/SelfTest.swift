@@ -77,9 +77,11 @@ enum SelfTest {
         }
         if mode == "commands" {
             for t in [AgentRunner.Target.claude, .codex] {
-                for resume in [nil, "0199aaaa-bbbb-cccc-dddd-eeeeffff0000"] {
-                    let c = AgentRunner.command(t, prompt: "PROMPT", resume: resume, newSession: "11111111-2222-3333-4444-555555555555", readOnly: true)!
-                    log("\(t.rawValue) \(resume == nil ? "fresh" : "continue"): " + c.replacingOccurrences(of: #"--allowedTools '[^']*'"#, with: "--allowedTools '…'", options: .regularExpression))
+                for readOnly in [false, true] {
+                    for resume in [nil, "0199aaaa-bbbb-cccc-dddd-eeeeffff0000"] {
+                        let c = AgentRunner.command(t, prompt: "PROMPT", resume: resume, newSession: "11111111-2222-3333-4444-555555555555", readOnly: readOnly)!
+                        log("\(t.rawValue) \(readOnly ? "read-only" : "write") \(resume == nil ? "fresh" : "continue"): " + c.replacingOccurrences(of: #"--allowedTools '[^']*'"#, with: "--allowedTools '…'", options: .regularExpression))
+                    }
                 }
             }
             log("done")
@@ -746,7 +748,7 @@ enum SelfTest {
         }
     }
 
-    static func log(_ s: String) {
+    nonisolated static func log(_ s: String) {
         FileHandle.standardError.write(("[selftest] " + s + "\n").data(using: .utf8)!)
     }
 }

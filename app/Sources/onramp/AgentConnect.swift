@@ -45,6 +45,44 @@ enum AgentColor {
     }
 }
 
+/// Where each agent's command is, and how to run it. Nothing assumed that can be
+/// asked: your settings first (agent_paths / agent_args in settings.json, or
+/// Choose… in the Agent panel), then your terminal's PATH; flags come from the
+/// installed version's own --help.
+enum AgentTools {
+    nonisolated(unsafe) static var paths: [String: String] = [:]
+    nonisolated(unsafe) static var args: [String: String] = [:]
+
+    /// The command's absolute path, or nil if it's nowhere to be found.
+    static func path(_ tool: String) -> String? {
+        let fm = FileManager.default
+        if let set = paths[tool], !set.isEmpty {
+            let p = (set as NSString).expandingTildeInPath
+            return fm.isExecutableFile(atPath: p) ? p : nil // what you chose, or nothing: never a guess instead
+        }
+        return AgentIntegration.userPath.split(separator: ":").lazy
+            .map { "\($0)/\(tool)" }.first { fm.isExecutableFile(atPath: $0) }
+    }
+
+    /// For a shell command line: the path, single-quoted.
+    static func quoted(_ tool: String) -> String? { path(tool).map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" } }
+
+    /// `codex exec` flags for "may edit files in the repo, without stopping to ask",
+    /// from what this codex supports: newer ones have --approve-for-me (which
+    /// already means workspace-write, and refuses --sandbox alongside it).
+    nonisolated(unsafe) private static var codexFlags: [String: String] = [:]
+    static func codexWriteFlags() -> String {
+        if let custom = args["codex"], !custom.isEmpty { return custom }
+        guard let codex = quoted("codex") else { return "--sandbox workspace-write" }
+        if let cached = codexFlags[codex] { return cached }
+        let help = AgentIntegration.shell("\(codex) exec --help").output
+        let flags = help.contains("--approve-for-me") ? "--approve-for-me"
+            : help.contains("--full-auto") ? "--full-auto" : "--sandbox workspace-write"
+        codexFlags[codex] = flags
+        return flags
+    }
+}
+
 /// One agent onramp can register its MCP server with. Nothing is
 /// registered until the user clicks Connect (opt-in, reversible).
 struct AgentIntegration {
@@ -55,6 +93,8 @@ struct AgentIntegration {
     }
 
     let name: String
+    /// The command it runs as ("claude"), if it's a CLI you can point Onramp at.
+    var tool: String? = nil
     let check: () -> State
     let connect: () throws -> Void
     let disconnect: () throws -> Void
@@ -76,30 +116,33 @@ struct AgentIntegration {
     static let all: [AgentIntegration] = [
         AgentIntegration(
             name: "Claude Code",
+            tool: "claude",
             check: {
-                guard shell("command -v claude").status == 0 else { return .notInstalled }
+                guard let claude = AgentTools.quoted("claude") else { return .notInstalled }
                 // Either way counts: the plugin (what Connect installs), or a plain `claude mcp add onramp`.
-                if shell("claude plugin list").output.contains("onramp@onramp") { return .connected("plugin") }
-                if shell("claude mcp get onramp").status == 0 { return .connected("MCP server") }
+                if shell("\(claude) plugin list").output.contains("onramp@onramp") { return .connected("plugin") }
+                if shell("\(claude) mcp get onramp").status == 0 { return .connected("MCP server") }
                 return .notConnected
             },
             connect: {
-                if !shell("claude plugin marketplace list").output.contains("onramp") {
-                    try shell("claude plugin marketplace add '\(claudePlugin)'").orThrow()
+                guard let claude = AgentTools.quoted("claude") else { throw CoreError.Io(message: "Couldn't find the claude command") }
+                if !shell("\(claude) plugin marketplace list").output.contains("onramp") {
+                    try shell("\(claude) plugin marketplace add '\(claudePlugin)'").orThrow()
                 }
-                try shell("claude plugin install onramp@onramp").orThrow()
+                try shell("\(claude) plugin install onramp@onramp").orThrow()
             },
             disconnect: {
                 // Undo whichever way it was connected (both, if both).
-                let plugin = shell("claude plugin list").output.contains("onramp@onramp") ? shell("claude plugin uninstall onramp@onramp") : nil
-                let server = shell("claude mcp get onramp").status == 0 ? shell("claude mcp remove onramp") : nil
+                guard let claude = AgentTools.quoted("claude") else { return }
+                let plugin = shell("\(claude) plugin list").output.contains("onramp@onramp") ? shell("\(claude) plugin uninstall onramp@onramp") : nil
+                let server = shell("\(claude) mcp get onramp").status == 0 ? shell("\(claude) mcp remove onramp") : nil
                 try plugin?.orThrow()
                 try server?.orThrow()
             }
         ),
         cli(name: "Codex", tool: "codex",
-            add: "codex mcp add onramp -- '\(command)' mcp",
-            remove: "codex mcp remove onramp"),
+            add: "mcp add onramp -- '\(command)' mcp",
+            remove: "mcp remove onramp"),
         cursor,
     ]
 
@@ -108,12 +151,16 @@ struct AgentIntegration {
     private static func cli(name: String, tool: String, add: String, remove: String) -> AgentIntegration {
         AgentIntegration(
             name: name,
+            tool: tool,
             check: {
-                guard shell("command -v \(tool)").status == 0 else { return .notInstalled }
-                return shell("\(tool) mcp get onramp").status == 0 ? .connected("MCP server") : .notConnected
+                guard let exe = AgentTools.quoted(tool) else { return .notInstalled }
+                return shell("\(exe) mcp get onramp").status == 0 ? .connected("MCP server") : .notConnected
             },
-            connect: { try shell(add).orThrow() },
-            disconnect: { try shell(remove).orThrow() }
+            connect: {
+                guard let exe = AgentTools.quoted(tool) else { throw CoreError.Io(message: "Couldn't find the \(tool) command") }
+                try shell("\(exe) \(add)").orThrow()
+            },
+            disconnect: { if let exe = AgentTools.quoted(tool) { try shell("\(exe) \(remove)").orThrow() } }
         )
     }
 
@@ -280,18 +327,47 @@ final class AgentConnectViewController: NSViewController {
         switch state {
         case .checking: row.status.stringValue = "Checking…"; row.button.isEnabled = false
         case .notInstalled:
-            let tool = row.agent.name == "Cursor" ? "Cursor" : "the \(row.agent.name == "Claude Code" ? "claude" : row.agent.name.lowercased()) command"
-            row.status.stringValue = "Couldn't find \(tool)"
-            row.status.toolTip = "Looked in your shell's PATH and the usual install folders:\n" + AgentIntegration.userPath.replacingOccurrences(of: ":", with: "\n")
-            row.status.textColor = .secondaryLabelColor; row.button.isEnabled = false; row.button.title = "Connect"
+            if let tool = row.agent.tool {
+                let chosen = AgentTools.paths[tool].flatMap { $0.isEmpty ? nil : $0 }
+                row.status.stringValue = chosen.map { "\($0) isn't there or can't run" } ?? "Couldn't find the \(tool) command"
+                row.status.toolTip = "Looked in your shell's PATH and the usual install folders:\n" + AgentIntegration.userPath.replacingOccurrences(of: ":", with: "\n")
+                    + "\n\nChoose… to point Onramp at it (saved as agent_paths in settings.json)."
+                row.button.isEnabled = true; row.button.title = "Choose…" // where is it? you say, we don't guess
+            } else {
+                row.status.stringValue = "Not installed"
+                row.button.isEnabled = false; row.button.title = "Connect"
+            }
+            row.status.textColor = .secondaryLabelColor
         case let .connected(how):
             row.status.stringValue = "✓ Connected (\(how))"; row.status.textColor = .systemGreen; row.button.isEnabled = true; row.button.title = "Disconnect"
+            row.status.toolTip = row.agent.tool.flatMap(AgentTools.path).map { "Runs \($0)" }
         case .notConnected: row.status.stringValue = "Not connected"; row.status.textColor = .secondaryLabelColor; row.button.isEnabled = true; row.button.title = "Connect"
+        }
+    }
+
+    /// Point Onramp at an agent's command (saved as agent_paths in settings.json), then check again.
+    private func choose(_ i: Int) {
+        guard let tool = rows[i].agent.tool, let window = view.window else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.treatsFilePackagesAsDirectories = true
+        panel.showsHiddenFiles = true
+        panel.message = "Where is the \(tool) command? (Run `which \(tool)` in your terminal to see.)"
+        panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin")
+        panel.beginSheetModal(for: window) { [weak self] response in
+            guard response == .OK, let url = panel.url else { return }
+            MainActor.assumeIsolated {
+                Style.shared.update { $0.agentPaths[tool] = url.path }
+                self?.show(.checking, at: i)
+                self?.refresh()
+            }
         }
     }
 
     @objc private func toggle(_ sender: NSButton) {
         let i = sender.tag
+        if states[i] == .notInstalled { return choose(i) }
         let agent = rows[i].agent
         let connecting = !states[i].isConnected
         show(.checking, at: i)
