@@ -32,7 +32,7 @@ That's the loop. No IDE, no copy-pasting between a PR page and a terminal.
   click, and any other agent that speaks MCP can plug in too.
 - **Fast on big diffs.** A 665-file review opens in about 0.2 s, and
   scrolling stays at 120 fps. [Numbers](docs/guide.md#performance)
-- **See what your agents are doing.** A yield sign in the menu bar fills in
+- **See what your agents are doing.** The Onramp icon in the menu bar fills in
   while an agent works, and shows a dot when a reply is waiting for you.
 
 ## Get it

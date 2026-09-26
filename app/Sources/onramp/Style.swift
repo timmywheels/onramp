@@ -11,7 +11,7 @@ struct Settings: Codable, Equatable {
     var fontLigatures = true               // coding ligatures like -> => != (fonts that have them)
     var ghPath = ""                        // GitHub CLI; "" = find it (Homebrew, ~/.local/bin, your shell's PATH)
     var ciComments = true                  // CI failures (check annotations) show up as review threads
-    var menuBar = true                     // the yield sign in the menu bar: what your agents are doing
+    var menuBar = true                     // the road sign in the menu bar: what your agents are doing
     var dockIcon = true                    // false: menu bar only (needs menu_bar on)
     var agentSession = "auto"              // agent_session: auto (a primed Claude session per review) | manual | off
     var agentModel: [String: String] = [:] // agent_model: {"claude": "sonnet"} for faster answers; unset = the agent's default

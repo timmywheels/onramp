@@ -1,6 +1,6 @@
 import AppKit
 
-/// The yield sign in the menu bar: what your agents are doing across your
+/// The road sign in the menu bar: what your agents are doing across your
 /// recent projects. Outline when quiet, filled while an agent works, with a
 /// dot when something is waiting on you. Click for the details.
 @MainActor
@@ -223,40 +223,44 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
 
     // MARK: Icon
 
-    /// A template image (the menu bar tints it): a rounded yield triangle,
-    /// filled while an agent works, with a dot when something needs you.
+    /// A template image (the menu bar tints it): the app icon's rounded square
+    /// with its road curving through, solid while an agent works, with a dot
+    /// in the empty corner when something needs you.
     static func icon(working: Bool, dot: Bool) -> NSImage {
         let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
-            let top: CGFloat = 15, bottom: CGFloat = 2.5, left: CGFloat = 1.5, right: CGFloat = 16.5
-            let pts = [NSPoint(x: left, y: top), NSPoint(x: right, y: top), NSPoint(x: (left + right) / 2, y: bottom)]
-            let tri = NSBezierPath()
-            tri.move(to: NSPoint(x: (left + right) / 2, y: top))
-            for i in [1, 2, 0] { tri.appendArc(from: pts[i], to: pts[(i + 1) % 3], radius: 1.8) }
-            tri.close()
-            // The sign's inner triangle, like the white one on a real yield sign.
-            let c = NSPoint(x: (left + right) / 2, y: 10.75), k: CGFloat = 0.3 // the incenter: an even band all round; small enough to leave clear padding inside the outline
-            let inner = NSBezierPath()
-            let q = pts.map { NSPoint(x: c.x + ($0.x - c.x) * k, y: c.y + ($0.y - c.y) * k) }
-            inner.move(to: NSPoint(x: (q[0].x + q[1].x) / 2, y: q[0].y))
-            for i in [1, 2, 0] { inner.appendArc(from: q[i], to: q[(i + 1) % 3], radius: 0.8) }
-            inner.close()
+            let box = NSRect(x: 1.5, y: 1.5, width: 15, height: 15)
+            let square = NSBezierPath(roundedRect: box, xRadius: 4, yRadius: 4)
+            let road = Self.road(in: box); road.lineWidth = 2.6
+            let spot = NSBezierPath(ovalIn: NSRect(x: 3.6, y: 3.6, width: 4.2, height: 4.2)) // bottom left, clear of the road
             NSColor.black.set()
+            NSGraphicsContext.saveGraphicsState()
+            square.addClip() // the road runs off the square's edges, like on the icon
             if working {
-                tri.fill() // an agent is working: solid
-                if dot { // …and something's waiting on you: the inner triangle cut out
-                    NSGraphicsContext.current?.compositingOperation = .clear
-                    inner.fill()
-                    NSGraphicsContext.current?.compositingOperation = .sourceOver
-                }
-            } else {
-                tri.lineWidth = 1.6; tri.lineJoinStyle = .round; tri.stroke()
-                if dot { inner.fill() } // waiting on you: the inner triangle fills in
+                square.fill() // an agent is working: solid, the road cut out…
+                NSGraphicsContext.current?.compositingOperation = .clear
+            }
+            road.stroke()
+            if dot { spot.fill() } // …and the dot too when something's waiting on you
+            NSGraphicsContext.restoreGraphicsState()
+            if !working {
+                let outline = NSBezierPath(roundedRect: box.insetBy(dx: 0.75, dy: 0.75), xRadius: 3.3, yRadius: 3.3)
+                outline.lineWidth = 1.5; outline.stroke()
             }
             return true
         }
         image.isTemplate = true
         image.accessibilityDescription = working ? "Onramp: an agent is working" : dot ? "Onramp: waiting on you" : "Onramp"
         return image
+    }
+
+    /// The icon's road: in at the top left of `box`, out at the bottom right,
+    /// running past both edges so a clip trims it (traced from AppIcon.icns).
+    static func road(in box: NSRect) -> NSBezierPath {
+        func p(_ x: CGFloat, _ y: CGFloat) -> NSPoint { NSPoint(x: box.minX + x * box.width, y: box.maxY - y * box.height) }
+        let path = NSBezierPath()
+        path.move(to: p(0.32, -0.05))
+        path.curve(to: p(0.84, 1.05), controlPoint1: p(0.32, 0.45), controlPoint2: p(0.84, 0.55))
+        return path
     }
 
     // MARK: Self-test
