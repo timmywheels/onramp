@@ -88,17 +88,28 @@ enum GitHub {
     }
 
     /// Run gh in `repo`, returning stdout.
-    private static func gh(_ args: [String], repo: String) throws -> Data {
-        guard let path = ghPath() else {
-            throw Failure(description: configuredPath.isEmpty
-                ? "Couldn't find the GitHub CLI (gh). Install it (brew install gh), or choose where it is."
-                : "gh_path in settings.json (\(configuredPath)) isn't an executable.", notFound: true)
-        }
+    /// Your gh token, read once (`gh auth token`) and kept in memory: every gh call gets it as
+    /// GH_TOKEN, so gh doesn't go to the Keychain each time (which can fail from an app).
+    nonisolated(unsafe) private static var token: String?
+    private static let tokenLock = NSLock()
+
+    private static func cachedToken(gh path: String, refresh: Bool = false) -> String? {
+        tokenLock.lock(); defer { tokenLock.unlock() }
+        if let token, !refresh { return token }
+        guard let r = try? run(path, ["auth", "token"], repo: NSHomeDirectory(), token: nil), r.status == 0 else { token = nil; return nil }
+        let t = String(data: r.out, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        token = t.isEmpty ? nil : t
+        return token
+    }
+
+    private static func run(_ path: String, _ args: [String], repo: String, token: String?) throws -> (status: Int32, out: Data, err: String) {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
         var env = ProcessInfo.processInfo.environment // apps launched from the Dock get a bare PATH; gh runs git
         env["PATH"] = ([(path as NSString).deletingLastPathComponent, "/opt/homebrew/bin", "/usr/local/bin"] + (env["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map(String.init)).joined(separator: ":")
+        if env["HOME"] == nil { env["HOME"] = NSHomeDirectory() } // gh finds its login under ~/.config/gh
+        if let token { env["GH_TOKEN"] = token }
         p.environment = env
         p.currentDirectoryURL = URL(fileURLWithPath: repo)
         let out = Pipe(), err = Pipe()
@@ -109,11 +120,27 @@ enum GitHub {
         let data = out.fileHandleForReading.readDataToEndOfFile()
         let errText = String(data: err.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
         p.waitUntilExit()
-        guard p.terminationStatus == 0 else {
-            if errText.contains("gh auth login") { throw Failure(description: "Not logged in to GitHub: run gh auth login") }
-            throw Failure(description: errText.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").first ?? "gh failed")
+        return (p.terminationStatus, data, errText)
+    }
+
+    private static func gh(_ args: [String], repo: String) throws -> Data {
+        guard let path = ghPath() else {
+            throw Failure(description: configuredPath.isEmpty
+                ? "Couldn't find the GitHub CLI (gh). Install it (brew install gh), or choose where it is."
+                : "gh_path in settings.json (\(configuredPath)) isn't an executable.", notFound: true)
         }
-        return data
+        var r = try run(path, args, repo: repo, token: cachedToken(gh: path))
+        if r.status != 0, r.err.contains("gh auth login") || r.err.contains("HTTP 401") { // token gone stale, or the Keychain said no: once more, fresh
+            r = try run(path, args, repo: repo, token: cachedToken(gh: path, refresh: true))
+        }
+        guard r.status == 0 else {
+            let detail = r.err.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").filter { !$0.isEmpty }
+            if r.err.contains("gh auth login") {
+                throw Failure(description: "GitHub CLI couldn't sign in for Onramp (\(detail.first ?? "no token")). If `gh auth status` works in Terminal, try again; otherwise run gh auth login.")
+            }
+            throw Failure(description: detail.prefix(2).joined(separator: " ").isEmpty ? "gh failed" : detail.prefix(2).joined(separator: " "))
+        }
+        return r.out
     }
 
     private static var decoder: JSONDecoder {
