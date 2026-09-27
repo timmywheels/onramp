@@ -170,7 +170,12 @@ final class ProjectWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func wireComments() {
-        commentsPanel.onSelect = { [weak self] t in self?.reviewView.document.scrollToThread(t) }
+        commentsPanel.onSelect = { [weak self] t in
+            ReadMarks.markRead([t]) // opening it is reading it
+            self?.reviewView.document.scrollToThread(t)
+        }
+        commentsPanel.onMarkRead = { ReadMarks.markRead($0) }
+        commentsPanel.onSetResolved = { [weak self] t, resolved in self?.reviewView.document.resolve(t, resolved) }
         reviewView.document.onThreadsChanged = { [weak self] in
             guard let self else { return }
             let items = self.reviewView.document.panelItems

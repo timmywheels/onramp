@@ -30,6 +30,7 @@ final class SidebarController: NSViewController {
         }
         switcher.font = .systemFont(ofSize: 11.5)
         switcher.segmentDistribution = .fillEqually
+        switcher.selectedSegmentBezelColor = CommentsPanel.selectedSegment
         switcher.selectedSegment = 0
         switcher.target = self
         switcher.action = #selector(switched)

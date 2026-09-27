@@ -1,4 +1,5 @@
 import AppKit
+import QuartzCore
 
 /// The right-hand panel: every comment thread in the review, in review order,
 /// filterable (Open / Resolved / All). Click one to jump to it.
@@ -19,7 +20,14 @@ final class CommentsPanel: NSViewController {
 
     enum Filter: Int { case open, resolved, all }
 
+    /// The selected segment: a quiet grey pill like the toolbar's, not the system accent.
+    static let selectedSegment = NSColor(name: nil) { $0.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? NSColor(white: 1, alpha: 0.16) : NSColor(white: 0, alpha: 0.1) }
+
     var onSelect: ((Thread) -> Void)?
+    /// Seen these replies: they stop needing you (swipe right, or Mark All as Read).
+    var onMarkRead: (([Thread]) -> Void)?
+    /// Resolve (true) or reopen (false) a thread (swipe left).
+    var onSetResolved: ((Thread, Bool) -> Void)?
 
     private var items: [Item] = []
     private var filter = Filter.open
@@ -27,6 +35,9 @@ final class CommentsPanel: NSViewController {
     private let scroll = NSScrollView()
     private let list = FlippedStack()
     private let empty = NSTextField(labelWithString: "")
+    private let markAll = NSButton(title: "Mark All as Read", target: nil, action: nil)
+    private lazy var scrollBelowFilter = scroll.topAnchor.constraint(equalTo: filterControl.bottomAnchor, constant: 10)
+    private lazy var scrollBelowMarkAll = scroll.topAnchor.constraint(equalTo: markAll.bottomAnchor, constant: 4)
 
     override func loadView() {
         let root = NSView()
@@ -35,6 +46,7 @@ final class CommentsPanel: NSViewController {
         filterControl.target = self
         filterControl.action = #selector(filterChanged)
         filterControl.segmentDistribution = .fillEqually
+        filterControl.selectedSegmentBezelColor = Self.selectedSegment
 
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
@@ -44,7 +56,15 @@ final class CommentsPanel: NSViewController {
         empty.textColor = .secondaryLabelColor
         empty.alignment = .center
 
-        for v in [filterControl, scroll, empty] as [NSView] {
+        markAll.bezelStyle = .inline
+        markAll.controlSize = .small
+        markAll.font = .systemFont(ofSize: 11)
+        markAll.target = self
+        markAll.action = #selector(markAllClicked)
+        markAll.toolTip = "Every reply waiting on you: seen (a new reply brings it back)"
+        markAll.isHidden = true
+
+        for v in [filterControl, markAll, scroll, empty] as [NSView] {
             v.translatesAutoresizingMaskIntoConstraints = false
             root.addSubview(v)
         }
@@ -52,7 +72,9 @@ final class CommentsPanel: NSViewController {
             filterControl.topAnchor.constraint(equalTo: root.topAnchor, constant: 8),
             filterControl.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             filterControl.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
-            scroll.topAnchor.constraint(equalTo: filterControl.bottomAnchor, constant: 10),
+            scrollBelowFilter,
+            markAll.topAnchor.constraint(equalTo: filterControl.bottomAnchor, constant: 8),
+            markAll.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
             scroll.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scroll.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scroll.bottomAnchor.constraint(equalTo: root.bottomAnchor),
@@ -68,8 +90,16 @@ final class CommentsPanel: NSViewController {
         self.items = items
         let open = items.filter { $0.status != .resolved }.count
         filterControl.setLabel(open > 0 ? "Open (\(open))" : "Open", forSegment: 0)
+        let waiting = items.filter { $0.status == .needsYou }.count
+        if isViewLoaded {
+            markAll.isHidden = waiting < 1
+            scrollBelowFilter.isActive = waiting < 1
+            scrollBelowMarkAll.isActive = waiting > 0
+        }
         rebuild()
     }
+
+    @objc private func markAllClicked() { onMarkRead?(items.filter { $0.status == .needsYou }.map(\.thread)) }
 
     @objc private func filterChanged() {
         filter = Filter(rawValue: filterControl.selectedSegment) ?? .open
@@ -89,6 +119,8 @@ final class CommentsPanel: NSViewController {
         for item in shown {
             let row = CommentRow(item)
             row.onClick = { [weak self] in self?.onSelect?(item.thread) }
+            row.onMarkRead = { [weak self] in self?.onMarkRead?([item.thread]) }
+            row.onSetResolved = { [weak self] in self?.onSetResolved?(item.thread, $0) }
             list.addSubview(row)
         }
         empty.stringValue = switch filter {
@@ -121,6 +153,12 @@ private final class FlippedStack: NSView {
 private final class CommentRow: NSView {
     let item: CommentsPanel.Item
     var onClick: (() -> Void)?
+    var onMarkRead: (() -> Void)?
+    var onSetResolved: ((Bool) -> Void)?
+    /// Two-finger swipe, like Mail: right marks read, left resolves (or reopens).
+    private var offset: CGFloat = 0 { didSet { needsDisplay = true } }
+    private var swipe: Bool? // nil until the gesture's direction is known; true = sideways
+    private static let swipeAt: CGFloat = 70
     private var hovering = false { didSet { needsDisplay = true } }
     private static let pad: CGFloat = 12
 
@@ -185,7 +223,31 @@ private final class CommentRow: NSView {
 
     func height(for width: CGFloat) -> CGFloat { 10 + 17 + 3 + snippetHeight(width) + 3 + 15 + 10 }
 
+    /// What a swipe does here: right → read (only if it needs you); left → resolve or reopen.
+    private var canMarkRead: Bool { item.status == .needsYou }
+    private var resolveAction: (title: String, resolve: Bool)? {
+        switch item.status {
+        case .open, .needsYou, .ci: ("Resolve", true)
+        case .resolved: ("Reopen", false)
+        default: nil // pending, being worked on, or a finding to triage
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
+        if offset != 0 {
+            let right = offset > 0
+            let (title, color): (String, NSColor) = right ? ("Mark Read", .systemBlue) : (resolveAction?.title ?? "", resolveAction?.resolve == false ? .systemOrange : .systemGreen)
+            let progress = min(1, abs(offset) / Self.swipeAt)
+            // The strip the row slid off of (the row itself is see-through: the panel's material shows).
+            let strip = right ? NSRect(x: 6, y: 2, width: offset, height: bounds.height - 4)
+                              : NSRect(x: bounds.width - 6 + offset, y: 2, width: -offset, height: bounds.height - 4)
+            color.withAlphaComponent(0.35 + 0.65 * progress).setFill() // deepens as you near the threshold
+            NSBezierPath(roundedRect: strip, xRadius: 6, yRadius: 6).fill()
+            let label = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 11.5, weight: .semibold), .foregroundColor: NSColor.white])
+            let size = label.size()
+            if size.width + 16 < strip.width { label.draw(at: NSPoint(x: strip.midX - size.width / 2, y: strip.midY - size.height / 2)) }
+            NSGraphicsContext.current?.cgContext.translateBy(x: offset, y: 0)
+        }
         let pad = Self.pad
         if hovering {
             NSColor.labelColor.withAlphaComponent(0.06).setFill()
@@ -222,5 +284,74 @@ private final class CommentRow: NSView {
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
     override func mouseDown(with event: NSEvent) { onClick?() }
+
+    override func scrollWheel(with event: NSEvent) {
+        if !event.momentumPhase.isEmpty { if swipe == true { return }; return super.scrollWheel(with: event) } // the fling after a swipe: ours, drop it
+        guard !event.phase.isEmpty else { return super.scrollWheel(with: event) } // a mouse wheel: just scroll
+        if event.phase == .began { swipe = nil; animation?.invalidate() }
+        if swipe == nil, event.scrollingDeltaX != 0 || event.scrollingDeltaY != 0 {
+            swipe = abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY) * 1.5 // clearly sideways, or it's a scroll
+        }
+        guard swipe == true else { return super.scrollWheel(with: event) }
+        // Follow the fingers (natural scrolling already reports their direction); past the
+        // threshold it gets heavier, like pulling on a rubber band.
+        let dx = event.isDirectionInvertedFromDevice ? event.scrollingDeltaX : -event.scrollingDeltaX
+        let heavy: CGFloat = abs(offset) > Self.swipeAt ? 0.35 : 1
+        let wasArmed = abs(offset) >= Self.swipeAt
+        let next = offset + dx * heavy
+        offset = next > 0 ? (canMarkRead ? min(next, bounds.width * 0.6) : 0) : (resolveAction != nil ? max(next, -bounds.width * 0.6) : 0)
+        if wasArmed != (abs(offset) >= Self.swipeAt) { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now) }
+        if event.phase == .ended || event.phase == .cancelled {
+            var action: (() -> Void)?
+            if event.phase == .ended, offset >= Self.swipeAt { action = onMarkRead }
+            if event.phase == .ended, offset <= -Self.swipeAt, let r = resolveAction { action = { [weak self] in self?.onSetResolved?(r.resolve) } }
+            if let action {
+                animate(to: offset > 0 ? bounds.width : -bounds.width, duration: 0.18, done: action) // slides away, then it's done
+            } else {
+                animate(to: 0, duration: 0.25) // springs back
+            }
+        }
+    }
+
+    private var animation: Timer?
+
+    /// Ease `offset` to `target` (ease-out), then run `done`.
+    private func animate(to target: CGFloat, duration: TimeInterval, done: (() -> Void)? = nil) {
+        animation?.invalidate()
+        let from = offset, start = CACurrentMediaTime()
+        let timer = Timer(timeInterval: 1.0 / 120, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                guard let self else { return timer.invalidate() }
+                let t = min(1, (CACurrentMediaTime() - start) / duration)
+                self.offset = from + (target - from) * (1 - pow(1 - t, 3))
+                if t >= 1 {
+                    timer.invalidate()
+                    self.swipe = nil
+                    done?()
+                }
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common) // keeps going while the trackpad is still sending events
+        animation = timer
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = NSMenu()
+        if canMarkRead { menu.addItem(ClosureMenuItem("Mark as Read") { [weak self] in self?.onMarkRead?() }) }
+        if let r = resolveAction { menu.addItem(ClosureMenuItem(r.title) { [weak self] in self?.onSetResolved?(r.resolve) }) }
+        return menu.items.isEmpty ? nil : menu
+    }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
+}
+
+/// A menu item that runs a closure.
+private final class ClosureMenuItem: NSMenuItem {
+    private let run: () -> Void
+    init(_ title: String, _ run: @escaping () -> Void) {
+        self.run = run
+        super.init(title: title, action: #selector(fire), keyEquivalent: "")
+        target = self
+    }
+    required init(coder: NSCoder) { fatalError() }
+    @objc private func fire() { run() }
 }

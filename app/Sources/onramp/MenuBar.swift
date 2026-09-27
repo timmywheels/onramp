@@ -36,8 +36,11 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
         if Demo.isOn { return } // the installed app may already have one
         if let mode = env["ONRAMP_SELFTEST"] { if mode == "menubar" { runSelfTest() }; return } // tests don't touch your menu bar
         NotificationCenter.default.addObserver(self, selector: #selector(settingsChanged), name: .styleChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(readMarksChanged), name: ReadMarks.changed, object: nil)
         settingsChanged()
     }
+
+    @objc private func readMarksChanged() { if item != nil { refresh() } }
 
     @objc private func settingsChanged() {
         let s = Style.shared.settings
@@ -84,7 +87,7 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
         // Review runs started from open tabs (only the app knows about those).
         var finished: [String: [(String, Bool)]] = [:]
         for review in (NSApp.delegate as? AppDelegate)?.openReviews ?? [] {
-            let recent = review.finishedRuns.filter { Date.now.timeIntervalSince($0.at) < Self.finishedFor }
+            let recent = review.finishedRuns.filter { Date.now.timeIntervalSince($0.at) < Self.finishedFor && $0.at > finishedSeenAt }
             if !recent.isEmpty { finished[review.repoPath, default: []] += recent.map { ($0.agent, $0.ok) } }
         }
         let known = authors
@@ -114,11 +117,7 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
             let working = claims[name] != nil || sessions.contains { $0.agent == name && $0.isWorking }
             p.agents.append(.init(name: name, working: working, file: claims[name]))
         }
-        p.waiting = threads.filter { t in
-            guard t.status == .open, t.source == nil, t.triage == nil, activeClaim(thread: t) == nil,
-                  let last = t.entries.last(where: { !$0.pending }) else { return false }
-            return last.author != me
-        }.count
+        p.waiting = threads.filter { $0.waitsOn(me) }.count
         p.finished = finished
         return p
     }
@@ -158,6 +157,12 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
                 add(row(dot: nil, f.ok ? "✓ \(f.agent) finished its review" : "\(f.agent)'s review didn't finish", nil, dim: false), to: menu, project: p.root)
             }
         }
+        if active.contains(where: \.needsYou) {
+            menu.addItem(.separator())
+            let read = menu.addItem(withTitle: "Mark All as Read", action: #selector(markAllRead), keyEquivalent: "")
+            read.target = self
+            read.toolTip = "Replies waiting on you and finished reviews: seen. A new reply brings the dot back."
+        }
         menu.addItem(.separator())
         let recent = menu.addItem(withTitle: "Open Recent", action: nil, keyEquivalent: "")
         let sub = NSMenu()
@@ -182,6 +187,19 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         let quit = menu.addItem(withTitle: "Quit Onramp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         quit.target = NSApp
+    }
+
+    /// Finished reviews from before this are seen (Mark All as Read).
+    private var finishedSeenAt = Date.distantPast
+
+    /// Every reply waiting on you in every project, and every finished review: seen.
+    @objc private func markAllRead() {
+        finishedSeenAt = .now
+        let roots = projects.map(\.root)
+        DispatchQueue.global(qos: .userInitiated).async {
+            ReadMarks.markRead(roots.flatMap { (try? loadThreads(repoRoot: $0)) ?? [] }) // posts .changed: we refresh
+            DispatchQueue.main.async { self.refresh() }
+        }
     }
 
     /// Menu bar only (no Dock icon), or both.
@@ -290,8 +308,13 @@ final class MenuBarItem: NSObject, NSMenuDelegate {
             let menu = NSMenu()
             self.menuNeedsUpdate(menu)
             log("menu: " + menu.items.map { $0.isSeparatorItem ? "—" : ($0.indentationLevel > 0 ? "  " : "") + $0.title }.joined(separator: " | "))
-            log("done")
-            NSApp.terminate(nil)
+            guard ProcessInfo.processInfo.environment["ONRAMP_SELFTEST_READ"] != nil else { log("done"); return NSApp.terminate(nil) }
+            self.markAllRead() // as from the menu; the rescan should find nothing waiting
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                log("after Mark All as Read: waiting \(self.projects.map(\.waiting).reduce(0, +)), dot \(self.projects.contains(where: \.needsYou))")
+                log("done")
+                NSApp.terminate(nil)
+            }
         }
     }
 }

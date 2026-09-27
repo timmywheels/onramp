@@ -140,6 +140,12 @@ final class ReviewView: NSView, NSPopoverDelegate {
             self, selector: #selector(didScroll), name: NSView.boundsDidChangeNotification, object: scrollView.contentView
         )
         NotificationCenter.default.addObserver(self, selector: #selector(styleChanged), name: .styleChanged, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(readMarksChanged), name: ReadMarks.changed, object: nil)
+    }
+
+    @objc private func readMarksChanged() {
+        document.onThreadsChanged?() // the panel's "needs you" chips
+        updateAgents()               // the status bar's "reply for you"
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -973,10 +979,16 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         allThreads.compactMap { t in activeClaim(thread: t).map { ($0.agent, t.path) } }
     }
     /// Open threads where someone else (an agent) spoke last: they're waiting on you.
-    var awaitingYou: [Thread] {
-        allThreads.filter { t in
-            guard t.status == .open, t.source == nil, t.triage == nil, activeClaim(thread: t) == nil, let last = t.entries.last(where: { !$0.pending }) else { return false }
-            return last.author != author
+    var awaitingYou: [Thread] { allThreads.filter { $0.waitsOn(author) } }
+
+    /// Resolve or reopen a thread from the side panel (its file may not be in the diff).
+    func resolve(_ t: Thread, _ resolved: Bool) {
+        do {
+            _ = try onramp.setResolved(repoRoot: repoPath, id: t.id, resolved: resolved, author: author, note: nil)
+            if resolved { ReadMarks.markRead([t]) }
+            reloadThreads()
+        } catch {
+            onNotice?(message(for: error))
         }
     }
 
@@ -1685,7 +1697,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
             if t.triage == "needed" { return .finding(severity: t.severity) }
             if t.source?.hasPrefix("ci:") == true { return .ci }
             if t.entries.allSatisfy(\.pending) { return .pending }
-            if let last = t.entries.last(where: { !$0.pending }), last.author != author { return .needsYou }
+            if t.waitsOn(author) { return .needsYou }
             return .open
         }
         for f in files {
@@ -2008,13 +2020,15 @@ final class NoticeView: NSVisualEffectView {
         label.font = .systemFont(ofSize: 12.5)
         label.textColor = .labelColor
         label.alignment = .center
+        label.isSelectable = false // a click dismisses, not selects
         addSubview(label)
-        toolTip = "Click to dismiss"
+        toolTip = "Click or swipe to dismiss"
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
     func show(_ text: String) {
+        guard isHidden || label.stringValue != text else { return } // already saying it: don't keep it up longer
         label.stringValue = text
         isHidden = false
         superview?.needsLayout = true
@@ -2043,6 +2057,10 @@ final class NoticeView: NSVisualEffectView {
         label.frame = NSRect(x: Self.padding, y: Self.padding - 2, width: ceil(size.width), height: ceil(size.height))
     }
 
+    override func hitTest(_ point: NSPoint) -> NSView? { isHidden ? nil : (frame.contains(point) ? self : nil) }
     override func mouseDown(with event: NSEvent) { hide() }
+    override func scrollWheel(with event: NSEvent) {
+        if abs(event.scrollingDeltaX) > abs(event.scrollingDeltaY), abs(event.scrollingDeltaX) > 2 { hide() } else { super.scrollWheel(with: event) }
+    }
     override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }
