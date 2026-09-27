@@ -130,13 +130,17 @@ enum GitHub {
                 : "gh_path in settings.json (\(configuredPath)) isn't an executable.", notFound: true)
         }
         var r = try run(path, args, repo: repo, token: cachedToken(gh: path))
-        if r.status != 0, r.err.contains("gh auth login") || r.err.contains("HTTP 401") { // token gone stale, or the Keychain said no: once more, fresh
+        let noGitHubRemote = r.err.contains("none of the git remotes") || r.err.contains("no git remotes")
+        if r.status != 0, !noGitHubRemote, r.err.contains("gh auth login") || r.err.contains("HTTP 401") { // token gone stale, or the Keychain said no: once more, fresh
             r = try run(path, args, repo: repo, token: cachedToken(gh: path, refresh: true))
         }
         guard r.status == 0 else {
             let detail = r.err.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: "\n").filter { !$0.isEmpty }
+            if noGitHubRemote {
+                throw Failure(description: "This repository isn't on GitHub (no remote points to github.com), so there are no pull requests to show.")
+            }
             if r.err.contains("gh auth login") {
-                throw Failure(description: "GitHub CLI couldn't sign in for Onramp (\(detail.first ?? "no token")). If `gh auth status` works in Terminal, try again; otherwise run gh auth login.")
+                throw Failure(description: "GitHub CLI isn't signed in. Run gh auth login in Terminal, then try again.")
             }
             throw Failure(description: detail.prefix(2).joined(separator: " ").isEmpty ? "gh failed" : detail.prefix(2).joined(separator: " "))
         }
