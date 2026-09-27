@@ -38,7 +38,8 @@ pub enum ReviewMode {
     /// One commit: its parent vs the commit (read-only; not on disk).
     Commit,
     /// A pull request, fetched to `refs/onramp/pr/<n>`: where it left its
-    /// base branch vs its head, like GitHub shows it (read-only).
+    /// base branch vs its head, like GitHub shows it (read-only), or your
+    /// working tree when the PR's branch is checked out here.
     PullRequest,
 }
 
@@ -57,6 +58,10 @@ pub struct ReviewChoice {
     /// Pull request mode: its number (base branch in `base_branch`, e.g. "origin/main").
     #[serde(default)]
     pub pr: Option<u32>,
+    /// Pull request mode: the PR's branch. When it's the branch checked out here
+    /// (your own PR), the review is your working tree: editable, to commit and push.
+    #[serde(default)]
+    pub head_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, uniffi::Record)]
@@ -92,7 +97,7 @@ pub fn review_choice(repo_root: String) -> ReviewChoice {
     // Before review.json there was a plain "mode" file.
     let legacy = dir.and_then(|d| std::fs::read_to_string(d.join("mode")).ok());
     let mode = if legacy.as_deref().map(str::trim) == Some("uncommitted") { ReviewMode::Uncommitted } else { ReviewMode::Branch };
-    ReviewChoice { mode, base_branch: None, commit: None, pr: None }
+    ReviewChoice { mode, base_branch: None, commit: None, pr: None, head_branch: None }
 }
 
 #[uniffi::export]
@@ -150,6 +155,14 @@ pub fn review_base(repo_root: String) -> Result<ReviewBase, CoreError> {
         }
         ReviewMode::PullRequest => {
             let (Some(n), Some(base_branch)) = (choice.pr, choice.base_branch.clone()) else { return Ok(head(ReviewMode::Uncommitted)) };
+            // The PR's branch is checked out here: show the working tree against the PR's base.
+            let current = stdout(git(&repo_root, &["symbolic-ref", "-q", "--short", "HEAD"])?);
+            if choice.head_branch.is_some() && current == choice.head_branch {
+                if let Some(rev) = stdout(git(&repo_root, &["merge-base", "HEAD", &base_branch])?) {
+                    let commits = stdout(git(&repo_root, &["rev-list", "--count", &format!("{rev}..HEAD")])?).and_then(|n| n.parse().ok()).unwrap_or(0);
+                    return Ok(ReviewBase { mode: ReviewMode::PullRequest, rev, target: None, branch: Some(base_branch), commits, title: Some(format!("PR #{n}")) });
+                }
+            }
             let Some(sha) = stdout(git(&repo_root, &["rev-parse", "--verify", "-q", &format!("{}^{{commit}}", pr_ref(n))])?) else {
                 return Err(CoreError::Git { message: format!("PR #{n} isn't fetched yet") });
             };
@@ -533,7 +546,7 @@ mod tests {
         let root = me.to_string_lossy().to_string();
 
         fetch_pull_request(root.clone(), "origin".into(), 7, "main".into()).unwrap();
-        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::PullRequest, base_branch: Some("origin/main".into()), commit: None, pr: Some(7) }).unwrap();
+        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::PullRequest, base_branch: Some("origin/main".into()), commit: None, pr: Some(7), head_branch: None }).unwrap();
         let b = review_base(root.clone()).unwrap();
         assert_eq!((b.mode, b.commits, b.title.as_deref()), (ReviewMode::PullRequest, 1, Some("PR #7")));
         let diffs = crate::review::load_review(root.clone(), b.rev.clone(), b.target.clone()).unwrap();
@@ -553,6 +566,17 @@ mod tests {
         assert_eq!(review_checkout(root.clone()).unwrap(), checkout); // reused
         assert_eq!(list_worktrees(root.clone()).unwrap().len(), 1); // hidden from the worktree picker
         assert_eq!(std::fs::read_to_string(me.join("a.txt")).unwrap(), "one\n");
+
+        // My own PR: its branch checked out here, plus uncommitted work. The review is
+        // my working tree against the PR's base (editable, so I can commit and push).
+        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::PullRequest, base_branch: Some("origin/main".into()), commit: None, pr: Some(7), head_branch: Some("feature".into()) }).unwrap();
+        assert!(review_base(root.clone()).unwrap().target.is_some()); // on main, not the PR's branch: still GitHub's copy
+        run(&me, &["checkout", "-qb", "feature", "refs/onramp/pr/7"]);
+        std::fs::write(me.join("b.txt"), "newer\n").unwrap();
+        let b = review_base(root.clone()).unwrap();
+        assert_eq!((b.mode, b.target.as_deref(), b.commits, b.title.as_deref()), (ReviewMode::PullRequest, None, 1, Some("PR #7")));
+        let diffs = crate::review::load_review(root.clone(), b.rev.clone(), b.target.clone()).unwrap();
+        assert_eq!(diffs.iter().map(|d| d.path.as_str()).collect::<Vec<_>>(), vec!["a.txt", "b.txt", "mine.txt"]);
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -596,14 +620,14 @@ mod tests {
         assert_eq!((trees.len(), trees[0].branch.as_deref(), trees[0].is_current), (1, Some("feature"), true));
 
         // One commit: parent → commit, from git, not the working tree.
-        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::Commit, base_branch: None, commit: Some(commits[0].short.clone()), pr: None }).unwrap();
+        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::Commit, base_branch: None, commit: Some(commits[0].short.clone()), pr: None, head_branch: None }).unwrap();
         let one = review_base(root.clone()).unwrap();
         assert_eq!((one.mode, one.target.as_deref(), one.title.as_deref().map(|t| t.ends_with(" work"))), (ReviewMode::Commit, Some(commits[0].sha.as_str()), Some(true)));
         let diffs = crate::review::load_review(root.clone(), one.rev.clone(), one.target.clone()).unwrap();
         assert_eq!(diffs.iter().map(|d| d.path.as_str()).collect::<Vec<_>>(), vec!["a.txt", "gone.txt", "new.txt"]); // no loose.txt
 
         // A chosen base branch that doesn't exist falls back to the default.
-        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::Branch, base_branch: Some("nope".into()), commit: None, pr: None }).unwrap();
+        set_review_choice(root.clone(), ReviewChoice { mode: ReviewMode::Branch, base_branch: Some("nope".into()), commit: None, pr: None, head_branch: None }).unwrap();
         assert_eq!(review_base(root.clone()).unwrap().branch.as_deref(), Some("main"));
 
         set_review_mode(root.clone(), ReviewMode::Uncommitted).unwrap();

@@ -135,8 +135,10 @@ final class EmptyReviewView: NSView {
     private let title = NSTextField(labelWithString: "Nothing to review here yet")
     private let detail = NSTextField(wrappingLabelWithString: "")
     private let browse = NSButton(title: "Browse Pull Requests", target: nil, action: nil)
+    private let showBranch = NSButton(title: "Show All Changes on This Branch", target: nil, action: nil)
     private let hint = NSTextField(labelWithString: "⇧⌘P to search pull requests by title, #number or link")
     var onBrowse: (() -> Void)?
+    var onShowBranch: (() -> Void)?
 
     init() {
         super.init(frame: .zero)
@@ -156,14 +158,21 @@ final class EmptyReviewView: NSView {
         browse.bezelColor = DiffStyle.primaryButton
         browse.target = self
         browse.action = #selector(browseClicked)
+        showBranch.bezelStyle = .push
+        showBranch.controlSize = .large
+        showBranch.bezelColor = DiffStyle.primaryButton
+        showBranch.target = self
+        showBranch.action = #selector(showBranchClicked)
+        showBranch.isHidden = true
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .tertiaryLabelColor
-        let stack = NSStackView(views: [icon, title, detail, browse, hint])
+        let stack = NSStackView(views: [icon, title, detail, showBranch, browse, hint])
         stack.orientation = .vertical
         stack.alignment = .centerX
         stack.spacing = 8
         stack.setCustomSpacing(14, after: icon)
         stack.setCustomSpacing(18, after: detail)
+        stack.setCustomSpacing(10, after: showBranch)
         stack.setCustomSpacing(10, after: browse)
         stack.translatesAutoresizingMaskIntoConstraints = false
         addSubview(stack)
@@ -179,12 +188,21 @@ final class EmptyReviewView: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     /// "main matches origin/main." — why there's nothing, in terms of what you're comparing.
-    func set(comparing: String?) {
+    /// `narrowed`: showing less than the whole branch (uncommitted only, one commit), so offer the whole branch first.
+    func set(comparing: String?, narrowed: Bool) {
+        showBranch.isHidden = !narrowed
+        browse.bezelColor = narrowed ? nil : DiffStyle.primaryButton
+        title.stringValue = narrowed ? "No uncommitted changes" : "Nothing to review here yet"
+        if narrowed {
+            detail.stringValue = "This view only shows what isn't committed yet. Your branch's commits are in All Changes."
+            return
+        }
         let what = comparing.map { "This matches \($0)." } ?? "There are no changes yet."
         detail.stringValue = what + " Open a pull request to review it, or ask your agent for a change: it shows up here as it's written."
     }
 
     @objc private func browseClicked() { onBrowse?() }
+    @objc private func showBranchClicked() { onShowBranch?() }
 }
 
 

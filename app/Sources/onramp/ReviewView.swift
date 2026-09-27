@@ -30,7 +30,12 @@ final class ReviewView: NSView, NSPopoverDelegate {
     private(set) var base: ReviewBase?
     /// This tab's choice (branch / uncommitted / commit / PR). Tabs on one repo can
     /// differ; the front tab's is saved to the repo so agents and the CLI see it.
-    private(set) lazy var choice: ReviewChoice = reviewChoice(repoRoot: repoPath)
+    /// A new tab starts on everything on the branch (committed and not), whatever was
+    /// picked last time; it keeps the base you compare against. PRs set their own.
+    private(set) lazy var choice: ReviewChoice = {
+        let saved = reviewChoice(repoRoot: repoPath)
+        return ReviewChoice(mode: .branch, baseBranch: saved.mode == .branch ? saved.baseBranch : nil, commit: nil, pr: nil, headBranch: nil)
+    }()
 
     /// Save this tab's choice as the repo's (when it's the one in front).
     func publishChoice() { try? setReviewChoice(repoRoot: repoPath, choice: choice) }
@@ -129,12 +134,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
         document.onChange = { [weak self] in self?.updateStatus(); self?.updateAgents(); self?.refreshGit() }
         document.onFileChanged = { [weak self] i in self?.onFileChanged?(i) }
         document.onCurrentFile = { [weak self] i in self?.onCurrentFile?(i) }
-        document.onNotice = { [weak self] text in
-            guard let window = self?.window else { return }
-            let alert = NSAlert()
-            alert.messageText = text
-            alert.beginSheetModal(for: window)
-        }
+        document.onNotice = { [weak self] text in self?.notice.show(text) }
         QuickSend.onChange = { [weak self] in self?.updateAgents() }
         NotificationCenter.default.addObserver(
             self, selector: #selector(didScroll), name: NSView.boundsDidChangeNotification, object: scrollView.contentView
@@ -160,6 +160,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
         scrollView.frame = NSRect(x: 0, y: h, width: bounds.width, height: bounds.height - h - barHeight)
         loadingView?.frame = scrollView.frame
         emptyView?.frame = scrollView.frame
+        notice.place(in: scrollView.frame)
         document.width = scrollView.contentSize.width
         DiffStyle.paintWidth = document.width
 
@@ -454,6 +455,12 @@ final class ReviewView: NSView, NSPopoverDelegate {
     /// Browse Pull Requests, from the empty state (the window opens the sidebar).
     var onBrowsePullRequests: (() -> Void)?
     private var emptyView: EmptyReviewView?
+    /// Things worth saying that don't need an answer: shown over the diff, then gone.
+    private lazy var notice: NoticeView = {
+        let v = NoticeView()
+        addSubview(v, positioned: .above, relativeTo: nil)
+        return v
+    }()
 
     /// Nothing changed: say so, and point at pull requests.
     private func updateEmpty() {
@@ -461,6 +468,12 @@ final class ReviewView: NSView, NSPopoverDelegate {
         if empty, emptyView == nil {
             let v = EmptyReviewView()
             v.onBrowse = { [weak self] in self?.onBrowsePullRequests?() }
+            v.onShowBranch = { [weak self] in
+                guard let self else { return }
+                var c = self.choice
+                c.mode = .branch
+                self.setChoice(c) // reloads; the toolbar follows via onBaseChanged
+            }
             v.frame = scrollView.frame
             addSubview(v, positioned: .above, relativeTo: scrollView)
             emptyView = v
@@ -474,7 +487,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             case .uncommitted: "your last commit"
             default: nil
             }
-        } ?? nil)
+        } ?? nil, narrowed: base?.mode == .uncommitted)
     }
 
     /// Over the diff while a PR is fetched and loaded: diff-shaped placeholders and what's happening.
@@ -514,6 +527,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
                     self.choice.mode = .pullRequest
                     self.choice.pr = UInt32(number)
                     self.choice.baseBranch = "origin/" + pr.baseRefName
+                    self.choice.headBranch = pr.headRefName // checked out here: your own PR, editable
                     self.showLoading("Building the diff…")
                     DispatchQueue.main.async { // let that caption draw before the (synchronous) load
                         self.reload()
@@ -566,7 +580,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
 
     /// The commit whose CI we mirror: the PR's head, or your branch as pushed.
     private func ciCommit() -> String? {
-        if base?.mode == .pullRequest { return base?.target }
+        if base?.mode == .pullRequest, let head = base?.target { return head } // on disk (your own PR): as pushed, below
         if base?.mode == .commit { return nil }
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/env")
@@ -1972,4 +1986,63 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 func message(for error: Error) -> String {
     if let e = error as? CoreError { switch e { case let .Git(m), let .Io(m): return m } }
     return "\(error)"
+}
+
+/// A note over the bottom of the diff: fades after a few seconds (longer for
+/// longer text), or on a click. A new one replaces the last, so they never pile up.
+final class NoticeView: NSVisualEffectView {
+    private let label = NSTextField(wrappingLabelWithString: "")
+    private var hideTimer: Timer?
+    private static let maxWidth: CGFloat = 460, padding: CGFloat = 12
+
+    init() {
+        super.init(frame: .zero)
+        material = .hudWindow
+        blendingMode = .withinWindow
+        state = .active
+        wantsLayer = true
+        layer?.cornerRadius = 10
+        layer?.masksToBounds = true
+        isHidden = true
+        alphaValue = 0
+        label.font = .systemFont(ofSize: 12.5)
+        label.textColor = .labelColor
+        label.alignment = .center
+        addSubview(label)
+        toolTip = "Click to dismiss"
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func show(_ text: String) {
+        label.stringValue = text
+        isHidden = false
+        superview?.needsLayout = true
+        NSAnimationContext.runAnimationGroup { $0.duration = 0.15; animator().alphaValue = 1 }
+        hideTimer?.invalidate()
+        let seconds = max(4, Double(text.split(separator: " ").count) / 3) // about reading speed
+        hideTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.hide() }
+        }
+    }
+
+    func hide() {
+        hideTimer?.invalidate()
+        NSAnimationContext.runAnimationGroup({ $0.duration = 0.25; animator().alphaValue = 0 }, completionHandler: { [weak self] in
+            MainActor.assumeIsolated { if self?.alphaValue == 0 { self?.isHidden = true } }
+        })
+    }
+
+    /// Bottom centre of `area`, 16pt up.
+    func place(in area: NSRect) {
+        let width = min(Self.maxWidth, area.width - 32) - 2 * Self.padding
+        label.preferredMaxLayoutWidth = width
+        let size = label.sizeThatFits(NSSize(width: width, height: .greatestFiniteMagnitude))
+        let w = ceil(size.width) + 2 * Self.padding, h = ceil(size.height) + 2 * Self.padding - 4
+        frame = NSRect(x: round(area.midX - w / 2), y: area.minY + 16, width: w, height: h)
+        label.frame = NSRect(x: Self.padding, y: Self.padding - 2, width: ceil(size.width), height: ceil(size.height))
+    }
+
+    override func mouseDown(with event: NSEvent) { hide() }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: .pointingHand) }
 }

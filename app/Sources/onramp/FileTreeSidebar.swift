@@ -154,7 +154,7 @@ final class FileTreeSidebar: NSViewController {
 
     /// Highlight the file currently at the top of the review, and keep it in view. Cheap enough to do live.
     func reveal(_ i: Int) {
-        guard i < leaves.count else { return }
+        guard leaves.indices.contains(i) else { return } // -1 when the diff just emptied
         let leaf = leaves[i]
         guard leaf !== selected else { return }
         selected = leaf

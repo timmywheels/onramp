@@ -635,6 +635,8 @@ enum SelfTest {
                     review.document.scrollToThread(t) // like clicking it in the side panel
                 }
                 if env["ONRAMP_SNAP_FOLLOW"] != nil { review.document.following = true }
+                if env["ONRAMP_SNAP_UNCOMMITTED"] != nil { review.setMode(.uncommitted) }
+                if let text = env["ONRAMP_SNAP_NOTICE"] { review.document.onNotice?(text); review.document.onNotice?(text) } // twice: one note, not a stack
                 if let c = env["ONRAMP_SNAP_CURSOR"], let i = review.document.files.firstIndex(where: { $0.path.hasSuffix(c) }) { // the agent's cursor, as while it edits
                     review.document.scrollToFile(i)
                     review.document.agentCursor = (review.document.files[i].path, 12)
@@ -654,6 +656,10 @@ enum SelfTest {
                 p.arguments = ["-x", "-o", "-l", String(window.windowNumber), out]
                 try? p.run()
                 p.waitUntilExit()
+                if p.terminationStatus != 0, let view = window.contentView?.superview, let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) {
+                    view.cacheDisplay(in: view.bounds, to: rep) // no screen-recording permission: draw it ourselves (no vibrancy)
+                    try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: out))
+                }
                 log("snap \(out) (\(p.terminationStatus))")
                 NSApp.terminate(nil)
             }
