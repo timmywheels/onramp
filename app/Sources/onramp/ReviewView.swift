@@ -18,7 +18,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
     private let followButton = CapsuleButton()
     private var scrollMonitor: Any?
     /// Commit / push your branch (working-tree views only).
-    private let gitButton = CapsuleButton()
+    private let gitButton = ShipButton()
     /// "Update to 0.3.0" when a newer release is out (installed app only).
     private let updateButton = CapsuleButton()
     private var gitStatus: BranchStatus?
@@ -117,7 +117,10 @@ final class ReviewView: NSView, NSPopoverDelegate {
         gitButton.target = self
         gitButton.action = #selector(gitClicked)
         gitButton.isHidden = true
+        gitButton.onSettled = { [weak self] in self?.refreshGit() }
         prBar.onMerge = { [weak self] in self?.showMerge() }
+        prBar.onSync = { [weak self] in self?.syncGitHub(force: true, manual: true) }
+        prBar.onCheckout = { [weak self] in self?.checkOutPullRequest() }
         for v in [foldAllButton, progress, progressLabel, statusLabel, updateButton, gitButton, reviewButton, followButton, agentButton] as [NSView] { statusBar.addSubview(v) }
         // Agents come and go (sessions start/end); poll cheaply.
         agentTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
@@ -213,9 +216,11 @@ final class ReviewView: NSView, NSPopoverDelegate {
             document.baseRev = base.rev
             document.readOnly = base.target != nil // a commit or PR isn't on disk: nothing to edit
             document.prNumber = base.mode == .pullRequest ? choice.pr.map(Int.init) : nil
+            updatePRIsMine(pr: base.mode == .pullRequest ? choice.pr.flatMap { GitHub.cached(repo: repoPath, number: Int($0)) } : nil)
             let pr = base.mode == .pullRequest ? choice.pr.flatMap { GitHub.cached(repo: repoPath, number: Int($0)) } : nil
             prBar.set(pr)
             prBar.isHidden = pr == nil
+            prBar.setReadOnly(pr != nil && base.target != nil)
             needsLayout = true
             document.setFiles(TreeOrder.sorted(try loadReview(repoRoot: repoPath, baseRev: base.rev, target: base.target).map(ReviewFile.init)))
             onBaseChanged?(base)
@@ -321,6 +326,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
 
     func clickAgentForTests() { agentButtonClicked() }
     var gitButtonTitleForTests: String { gitButton.attributedTitle.string }
+    func shipForTests(message: String) { ship(message: message, push: true) }
     var gitButtonHiddenForTests: Bool { gitButton.isHidden }
     func showCommitForTests() { showCommit() }
     func showMergeForTests() {
@@ -603,13 +609,74 @@ final class ReviewView: NSView, NSPopoverDelegate {
         return p.terminationStatus == 0 && !sha.isEmpty ? sha : nil
     }
 
+    /// Switch the repo to `branch`, then review it (a PR or commit view goes back to the branch's changes).
+    func switchBranch(_ branch: String, done: @escaping () -> Void = {}) {
+        guard document.dirtyCount == 0 else { return notice.show("Save your edits first (⌘S).") }
+        let repo = repoPath
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try onramp.switchBranch(repoRoot: repo, branch: branch) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                switch result {
+                case let .failure(e): self.notice.show("Couldn't switch to \(branch): " + message(for: e))
+                case let .success(name):
+                    if self.choice.mode == .pullRequest || self.choice.mode == .commit {
+                        var c = self.choice
+                        c.mode = .branch
+                        self.setChoice(c)
+                    } else {
+                        self.reload()
+                    }
+                    self.notice.show("On \(name).")
+                }
+                done()
+            }
+        }
+    }
+
+    /// Put the PR's branch in this repo (gh pr checkout): the review becomes your editable working tree.
+    func checkOutPullRequest() {
+        guard let n = choice.pr.map(Int.init) else { return }
+        prBar.setCheckingOut(true)
+        let repo = repoPath
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try GitHub.checkout(repo: repo, number: n) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.prBar.setCheckingOut(false)
+                switch result {
+                case let .failure(e): self.notice.show("Couldn't check out #\(n): " + message(for: e))
+                case .success:
+                    self.reload()
+                    self.notice.show("On the PR's branch now: edit, then Commit and Push from the bottom bar.")
+                }
+            }
+        }
+    }
+
+    /// Whose PR this is (asks GitHub who you are once, off the main thread).
+    private func updatePRIsMine(pr: GitHub.PR?) {
+        guard let pr else { document.prIsMine = false; return }
+        let repo = repoPath
+        DispatchQueue.global(qos: .userInitiated).async {
+            let mine = GitHub.myLogin(repo: repo) == pr.author
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.document.prNumber == pr.number else { return }
+                self.document.prIsMine = mine
+                self.prBar.setMine(mine)
+            }
+        }
+    }
+
     private var githubSyncedAt: [Int: Date] = [:]
     private var githubSyncing = false
     private var githubTimer: Timer?
 
     /// Bring the PR's GitHub review threads in (at most every 30 s; `force` after you post, and on ⌘R).
     /// While a PR is on screen this repeats every 90 s, so others' replies show up.
-    func syncGitHub(force: Bool = false) {
+    /// `manual`: you clicked Sync, so say what came in (or that nothing did).
+    func syncGitHub(force: Bool = false, manual: Bool = false) {
+        prBar.showSync(document.githubPR != nil)
         guard let pr = document.githubPR else { githubTimer?.invalidate(); githubTimer = nil; return }
         if githubTimer == nil {
             githubTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
@@ -619,13 +686,16 @@ final class ReviewView: NSView, NSPopoverDelegate {
         if githubSyncing || (!force && githubSyncedAt[pr].map { Date().timeIntervalSince($0) < 30 } == true) { return }
         githubSyncing = true
         githubSyncedAt[pr] = Date()
+        prBar.setSyncing(true)
         let repo = repoPath, me = document.reviewAuthor, base = document.baseRev
         DispatchQueue.global(qos: .utility).async {
             let changed = Result { try GitHubReviewSync.pull(repo: repo, pr: pr, me: me, base: base) }
             DispatchQueue.main.async { [weak self] in
                 guard let self else { return }
                 self.githubSyncing = false
-                if case .success(true) = changed, self.document.githubPR == pr { self.document.reloadThreads() }
+                self.prBar.setSyncing(false, done: (try? changed.get()) != nil)
+                if case let .success(s) = changed, s.any, self.document.githubPR == pr { self.document.reloadThreads() }
+                if case let .success(s) = changed, manual { self.notice.show(s.summary.map { "From GitHub: \($0)." } ?? "Up to date with GitHub.") }
                 if case let .failure(e) = changed, force { self.document.onNotice?("Couldn't get GitHub's comments: " + message(for: e)) }
             }
         }
@@ -659,9 +729,12 @@ final class ReviewView: NSView, NSPopoverDelegate {
                 guard let self, !self.document.readOnly else { return }
                 self.gitStatus = status
                 guard let s = status, s.branch != nil else { self.gitButton.isHidden = true; self.needsLayout = true; return }
-                let title = s.changed > 0 ? "Commit…" : s.upstream == nil ? "Publish Branch" : s.ahead > 0 ? "↑\(s.ahead) Push" : nil
-                self.gitButton.isHidden = title == nil
-                if let title, self.gitButton.title != title { self.gitButton.setText(title) }
+                // Always there on your branch, saying what a click does (or that there's nothing to do).
+                let (title, symbol): (String, String?) = s.changed > 0 ? ("Commit \(s.changed)", "arrow.up.circle")
+                    : s.upstream == nil ? ("Publish", "icloud.and.arrow.up") : s.ahead > 0 ? ("Push \(s.ahead)", "arrow.up.circle")
+                    : ("Up to date", "checkmark.circle")
+                self.gitButton.isHidden = false
+                self.gitButton.setIdle(title, symbol: symbol, enabled: s.changed > 0 || s.upstream == nil || s.ahead > 0)
                 self.gitButton.toolTip = [s.branch.map { "On \($0)" }, s.upstream.map { "tracking \($0)" },
                                           s.ahead > 0 ? "\(s.ahead) to push" : nil, s.behind > 0 ? "\(s.behind) behind" : nil,
                                           s.changed > 0 ? "\(s.changed) changed files" : nil].compactMap { $0 }.joined(separator: " · ")
@@ -670,22 +743,11 @@ final class ReviewView: NSView, NSPopoverDelegate {
         }
     }
 
+    /// Changes: write a message (then it commits and pushes, ring filling). Nothing to commit: push now.
     @objc private func gitClicked() {
-        guard let s = gitStatus else { return }
-        let menu = NSMenu()
-        func item(_ title: String, _ enabled: Bool, _ action: Selector) {
-            let i = menu.addItem(withTitle: title, action: enabled ? action : nil, keyEquivalent: "")
-            i.target = self
-            i.isEnabled = enabled
-        }
-        item(s.changed > 0 ? "Commit \(s.changed) Changed File\(s.changed == 1 ? "" : "s")…" : "Nothing to Commit", s.changed > 0, #selector(showCommit))
-        if s.upstream == nil {
-            item("Publish \(s.branch ?? "Branch") to origin…", s.branch != nil, #selector(confirmPush))
-        } else {
-            item(s.ahead > 0 ? "Push \(s.ahead) Commit\(s.ahead == 1 ? "" : "s") to \(s.upstream!)…" : "Up to Date with \(s.upstream!)", s.ahead > 0, #selector(confirmPush))
-        }
-        if s.behind > 0 { item("\(s.behind) Commit\(s.behind == 1 ? "" : "s") Behind (pull in a terminal)", false, #selector(confirmPush)) }
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: gitButton.bounds.height + 4), in: gitButton)
+        guard let s = gitStatus, gitButton.phase == .idle else { return }
+        if s.changed > 0 { return showCommit() }
+        if s.upstream == nil || s.ahead > 0 { ship(message: nil, push: true) }
     }
 
     @objc private func showCommit() {
@@ -695,59 +757,42 @@ final class ReviewView: NSView, NSPopoverDelegate {
         popover.behavior = .transient
         popover.contentViewController = vc
         vc.onCommit = { [weak self, weak popover] message, push in
-            guard let self else { return nil }
-            do {
-                let sha = try commitAll(repoRoot: self.repoPath, message: message)
-                if push { _ = try pushBranch(repoRoot: self.repoPath) }
-                popover?.close()
-                self.statusLabel.stringValue = push ? "Committed \(sha) and pushed" : "Committed \(sha)"
-                self.reload()
-                return nil
-            } catch {
-                return onramp.message(for: error)
-            }
+            popover?.close() // the button shows the rest
+            self?.ship(message: message, push: push)
+            return nil
         }
         gitPopover = popover
         popover.show(relativeTo: gitButton.bounds, of: gitButton, preferredEdge: .maxY)
     }
 
-    /// Ask, then push (or publish) the branch. Never forces.
-    @objc private func confirmPush() {
-        guard let s = gitStatus, let branch = s.branch, let window else { return }
-        let alert = NSAlert()
-        if let up = s.upstream {
-            alert.messageText = "Push \(s.ahead) commit\(s.ahead == 1 ? "" : "s") to \(up)?"
-            alert.informativeText = "From your branch \(branch)."
-        } else {
-            alert.messageText = "Publish \(branch) to origin?"
-            alert.informativeText = "Creates the branch on origin and pushes \(branch) to it."
-        }
-        alert.addButton(withTitle: s.upstream == nil ? "Publish" : "Push")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { [weak self] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            MainActor.assumeIsolated { self.push() }
-        }
-    }
-
-    private func push() {
+    /// Commit (with `message`) and/or push, in the background, the button's ring showing how far along it is.
+    private func ship(message: String?, push: Bool) {
         let repo = repoPath
-        statusLabel.stringValue = "Pushing…"
+        gitButton.run(message != nil ? .committing : .pushing, label: message != nil ? "Committing…" : "Pushing…")
+        needsLayout = true
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = Result { try pushBranch(repoRoot: repo) }
-            DispatchQueue.main.async { [weak self] in
-                guard let self else { return }
-                switch result {
-                case let .success(branch): self.statusLabel.stringValue = "Pushed \(branch)"
-                case let .failure(e):
-                    let alert = NSAlert()
-                    alert.alertStyle = .warning
-                    alert.messageText = "Push failed"
-                    alert.informativeText = onramp.message(for: e)
-                    if let w = self.window { alert.beginSheetModal(for: w) } else { alert.runModal() }
-                    self.updateStatus()
+            var sha: String?
+            do {
+                if let message { sha = try commitAll(repoRoot: repo, message: message) }
+                if push {
+                    DispatchQueue.main.async { [weak self] in self?.gitButton.run(.pushing, label: "Pushing…"); self?.needsLayout = true }
+                    _ = try pushBranch(repoRoot: repo)
                 }
-                self.refreshGit()
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    self.gitButton.run(.done, label: push ? "Pushed" : "Committed \(sha ?? "")")
+                    self.needsLayout = true
+                    if sha != nil { self.reload() } else { self.refreshGit() }
+                }
+            } catch {
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    let committed = sha != nil
+                    self.gitButton.run(.failed, label: committed ? "Committed; push failed" : "Failed")
+                    self.needsLayout = true
+                    self.notice.show((committed ? "Committed \(sha!), but the push failed: " : "") + onramp.message(for: error))
+                    if committed { self.reload() }
+                }
             }
         }
     }
@@ -1099,8 +1144,31 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     var readOnly = false
     /// The PR on screen (its GitHub threads show; other PRs' don't). Set by ReviewView.reload.
     var prNumber: Int?
-    /// The PR whose GitHub review your comments go to (nil: they stay here).
+    /// The PR whose GitHub review your comments can go to (nil: they stay here).
     var githubPR: Int? { Style.shared.settings.githubComments ? prNumber : nil }
+    /// Your own PR: comments stay here unless you tick "Post to GitHub". Set by ReviewView.
+    var prIsMine = false { didSet { if prIsMine != oldValue { refreshGitHubToggles() } } }
+    /// Whether new comments on this PR go to GitHub: your last choice here, else
+    /// yes on someone else's PR and no on yours.
+    var postToGitHub: Bool {
+        get { prNumber.flatMap { UserDefaults.standard.object(forKey: postKey($0)) as? Bool } ?? !prIsMine }
+        set {
+            if let n = prNumber { UserDefaults.standard.set(newValue, forKey: postKey(n)) }
+            refreshGitHubToggles()
+        }
+    }
+    private func postKey(_ pr: Int) -> String { "onramp.postToGitHub.\(repoPath)#\(pr)" }
+    /// What the "Post to GitHub" boxes show (nil: hidden).
+    private var githubToggle: Bool? { githubPR == nil ? nil : postToGitHub }
+
+    private func refreshGitHubToggles() {
+        for case let v as CommentComposerView in commentViews.values { v.input.setGitHub(githubToggle) }
+        for case let v as CommentThreadView in commentViews.values {
+            v.postsToGitHub = githubToggle
+            v.replyInput?.setGitHub(v.located.thread.github == nil ? nil : githubToggle)
+            v.needsDisplay = true
+        }
+    }
     /// Something went to GitHub: pull its threads back (ids, others' replies).
     var onGitHubChanged: (() -> Void)?
     private var reloadAgain = false
@@ -1832,7 +1900,10 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
                                        line: UInt32(target.line), oldSide: target.old, author: author, body: body, pending: pending)
             file.composer = nil
             reloadThreads()
-            if !pending, let pr = githubPR {
+            if githubPR != nil, !postToGitHub {
+                _ = try keepLocal(repoRoot: repoPath, id: thread.id, index: 0) // for you and your agent only
+                reloadThreads()
+            } else if !pending, let pr = githubPR {
                 let repo = repoPath, base = baseRev
                 github { try GitHubReviewSync.publish(thread, repo: repo, pr: pr, base: base) }
             }
@@ -1854,9 +1925,14 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         }
     }
 
-    /// Your newest reply in thread `id` goes to GitHub too, if the thread is there.
+    /// Your newest reply in thread `id` goes to GitHub too, if the thread is there (and you said so).
     private func publishReply(_ thread: Thread?) {
-        guard let t = thread, let pr = githubPR, t.github?.pr == UInt32(pr), t.entries.last?.pending == false else { return }
+        guard let t = thread, let pr = githubPR, t.github?.pr == UInt32(pr), !t.entries.isEmpty else { return }
+        if !postToGitHub {
+            _ = try? keepLocal(repoRoot: repoPath, id: t.id, index: UInt32(t.entries.count - 1))
+            return reloadThreads()
+        }
+        guard t.entries.last?.pending == false else { return } // goes up with the review
         let repo = repoPath
         github { try GitHubReviewSync.publishReply(t, index: t.entries.count - 1, repo: repo, pr: pr) }
     }
@@ -1920,6 +1996,7 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
                     let editing = file.editingEntry?.id == id ? file.editingEntry?.index : nil
                     let view = (commentViews[key] as? CommentThreadView) ?? makeThreadView(located, file: i, key: key)
                     view.inReview = pendingCount > 0
+                    view.postsToGitHub = githubToggle
                     if view.located != located || view.replying != replying || view.editing != editing {
                         view.update(located, replying: replying, editing: editing)
                         if editing != nil { view.editInput?.focus() }
@@ -1945,6 +2022,8 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     private func makeThreadView(_ located: LocatedThread, file i: Int, key: String) -> CommentThreadView {
         let view = CommentThreadView(located, replying: files[i].replyingTo == located.thread.id, editing: nil, me: author)
         view.inReview = pendingCount > 0
+        view.postsToGitHub = githubToggle
+        view.onGitHubToggle = { [weak self] on in self?.postToGitHub = on }
         view.sendAgent = sendAgentName
         let id = located.thread.id
         let findingPath = files[i].path
@@ -2067,6 +2146,8 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
         view.input.onSecondary = { [weak self] text in self?.withFile(path) { self?.submitComment($0, text, pending: !inReview) } }
         view.input.onCancel = { [weak self] in self?.withFile(path) { self?.cancelComment($0) } }
         view.input.setSend(sendAgentName)
+        view.input.setGitHub(githubToggle)
+        view.input.onGitHubToggle = { [weak self] on in self?.postToGitHub = on }
         view.input.onSend = { [weak self] text in self?.withFile(path) { self?.submitComment($0, text, pending: false, send: true) } }
         addSubview(view, positioned: .below, relativeTo: hover)
         commentViews[key] = view

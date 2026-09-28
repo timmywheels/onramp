@@ -94,6 +94,17 @@ enum SelfTest {
                 let stage = ProcessInfo.processInfo.environment["ONRAMP_STAGE"] ?? ""
                 if stage == "commit" { review.showCommitForTests() }
                 if stage == "merge" { review.showMergeForTests() }
+                if stage == "ship" { // commit + push through the button: a picture at each step of the ring
+                    let out = ProcessInfo.processInfo.environment["ONRAMP_SNAP_OUT"] ?? "/tmp/ship"
+                    review.shipForTests(message: "Ship it from the self-test")
+                    for (k, t) in [0.25, 1.0, 2.0, 2.9, 3.3].enumerated() {
+                        try? await Task.sleep(nanoseconds: UInt64((k == 0 ? t : t - [0.25, 1.0, 2.0, 2.9, 3.3][k - 1]) * 1e9))
+                        capture(review.window, to: "\(out)-\(k).png")
+                        log("t=\(t)s git button: '\(review.gitButtonTitleForTests)'")
+                    }
+                    try? await Task.sleep(nanoseconds: 3_000_000_000)
+                    log("settled: '\(review.gitButtonTitleForTests)'")
+                }
                 if stage == "run" {
                     let repo = review.document.repoRootForTests
                     let sha = try! commitAll(repoRoot: repo, message: "WIP from the self-test")
@@ -457,6 +468,14 @@ enum SelfTest {
                                 doc.reloadThreads()
                                 log("in view: \(doc.files.flatMap(\.threads).count) threads, panel \(doc.panelItems.count), pr \(doc.prNumber ?? -1), paths \(Set(mine.map(\.path))) vs \(doc.files.map(\.path).prefix(2))")
                                 log("ready")
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2) { // whose PR it is arrives from GitHub
+                                    if ProcessInfo.processInfo.environment["ONRAMP_GH_COMPOSE"] != nil, let i = doc.files.firstIndex(where: { $0.path == f.path }) {
+                                        doc.startComment(i, CommentTarget(line: 3, old: true))
+                                        _ = frame(review.scrollView, to: max(0, doc.frame(ofFile: i).maxY - 700)) // deleted-line comments sit under the deleted block
+                                        log("composer open; posts to GitHub: \(doc.postToGitHub) (mine: \(doc.prIsMine))")
+                                    }
+                                    if ProcessInfo.processInfo.environment["ONRAMP_SNAP_OUT"] != nil { snap(window: review.window) }
+                                }
                             }
                         }
                     }
@@ -973,6 +992,16 @@ enum SelfTest {
     }
 
     /// Picture of `window` to ONRAMP_SNAP_OUT (as on screen), then quit.
+    /// A picture of `window` now (the app keeps running).
+    static func capture(_ window: NSWindow?, to out: String) {
+        guard let window else { return }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        p.arguments = ["-x", "-o", "-l", String(window.windowNumber), out]
+        try? p.run()
+        p.waitUntilExit()
+    }
+
     static func snap(window: NSWindow?) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_200_000_000)

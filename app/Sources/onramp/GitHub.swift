@@ -333,6 +333,11 @@ enum GitHub {
                          methods: methods, deleteBranchDefault: r.deleteBranchOnMerge)
     }
 
+    /// Switch the repo to the PR's branch (creating it locally if needed). Fails, with git's reason, if your changes are in the way.
+    static func checkout(repo: String, number: Int) throws {
+        _ = try gh(["pr", "checkout", String(number)], repo: repo)
+    }
+
     /// Merge on GitHub. With `deleteBranch`, gh also deletes the branch
     /// (and, if you're on it locally, switches you to the base branch).
     static func merge(repo: String, number: Int, method: MergeMethod, deleteBranch: Bool) throws {

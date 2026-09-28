@@ -34,11 +34,18 @@ TSX, Rust, Go, Python, CSS and YAML. Re-run it any time to reset.
   and choose who to send it to. Submitting publishes the pending comments and can start
   Claude Code (`claude -p`) or Codex (`codex exec`) in the repo to address them; their fixes and
   replies show up live. Pending comments are invisible to agents until you submit.
-- **On a pull request, comments are GitHub's too.** **Comment** posts it to the PR right away;
-  **Start a review** batches them and **Submit review** posts one GitHub review with your summary
-  and verdict (on your own PR, GitHub takes it as a comment). Replies, edits, resolving and
-  deleting your comments follow. The PR's GitHub threads come in when you open it, on ⌘R, and
-  every 90 s. Agents' replies stay in Onramp. Turn it off with `"github_comments": false`.
+- **On a pull request, comments can go to GitHub.** Tick **Post to GitHub** in the comment box
+  (on by default for someone else's PR, off for yours; remembered per PR). Then **Comment** posts it
+  right away, and **Start a review** batches them for **Submit review**: one GitHub review with your
+  summary and verdict. Unticked, a comment stays in Onramp for you and your agent ("only in Onramp").
+  Replies, edits, resolving and deleting your comments follow. The PR's GitHub threads come in when you
+  open it, on **Sync** (in the PR bar), on ⌘R, and every 90 s. Turn it all off with `"github_comments": false`.
+- **Read-only PRs.** A PR you haven't checked out shows 🔒 **Read-only**: comment, don't edit.
+  **Check Out** switches your repo to its branch (`gh pr checkout`) so you can edit, commit and push.
+- **Commit and push** from the bottom bar: **Commit N**, **Push N** or **Publish**. Write a message and
+  press ⌘↩; the ring fills as it commits and pushes, then turns into a check. Never forces.
+- **Switch branch** from the project menu (top left). Git refuses, and says why, if your changes are in the way.
+- **gh somewhere unusual?** **Onramp → Locate GitHub CLI…** (saved as `gh_path`).
 - **Toolbar, left:** switch project or worktree (this repo's worktrees, recent projects, ⌘O to open a folder).
 - **Toolbar, right — what to review:** *All changes on this branch* (committed or not, against where it left
   its base branch — `origin/HEAD`, else main/master, or pick one under *Compare Against*), *Uncommitted

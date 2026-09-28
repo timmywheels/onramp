@@ -45,7 +45,7 @@ final class CommitViewController: NSViewController {
         scroll.heightAnchor.constraint(equalToConstant: 84).isActive = true
         PopoverUI.add(scroll, to: stack, spacingAfter: 10)
 
-        pushAfter.state = UserDefaults.standard.bool(forKey: "onramp.pushAfterCommit") ? .on : .off
+        pushAfter.state = (UserDefaults.standard.object(forKey: "onramp.pushAfterCommit") as? Bool ?? true) ? .on : .off
         pushAfter.title = status.upstream == nil ? "Publish the branch after committing" : "Push after committing"
         PopoverUI.add(pushAfter, to: stack, spacingAfter: 10)
         errorLabel.textColor = .systemRed
@@ -201,4 +201,152 @@ final class MergeViewController: NSViewController {
     }
 
     @objc private func cancelClicked() { view.window?.performClose(nil) }
+}
+
+/// The bottom bar's Commit / Push button. While it works, a ring fills around
+/// its icon (committing, then pushing), like AirDrop; then it turns into a check.
+final class ShipButton: CapsuleButton {
+    enum Phase: Equatable { case idle, committing, pushing, done, failed }
+    private(set) var phase: Phase = .idle
+    private let track = CAShapeLayer()
+    private let ring = CAShapeLayer()
+    private let mark = CAShapeLayer()
+    private let badge = CALayer() // holds ring + mark, for the pop at the end
+    private var creep: Timer?
+    private var settle: DispatchWorkItem?
+    private var idleTitle = ""
+    private var idleSymbol: String?
+    /// Back to showing what there is to do (after the check has had its moment).
+    var onSettled: (() -> Void)?
+    static let ringSize: CGFloat = 14
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        for l in [track, ring, mark] {
+            l.fillColor = nil
+            l.lineCap = .round
+            l.lineJoin = .round
+            badge.addSublayer(l)
+        }
+        track.lineWidth = 2
+        ring.lineWidth = 2
+        ring.strokeEnd = 0
+        mark.lineWidth = 1.8
+        mark.strokeEnd = 0
+        badge.isHidden = true
+        layer?.addSublayer(badge)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        let d = Self.ringSize
+        badge.frame = CGRect(x: horizontalPadding - 3, y: (bounds.height - d) / 2, width: d, height: d)
+        let circle = CGPath(ellipseIn: CGRect(x: 1, y: 1, width: d - 2, height: d - 2), transform: nil)
+        track.path = circle
+        // This layer's y runs down: from 12 o'clock, angles increasing = clockwise on screen.
+        let arc = CGMutablePath()
+        arc.addArc(center: CGPoint(x: d / 2, y: d / 2), radius: d / 2 - 1, startAngle: -.pi / 2, endAngle: 1.5 * .pi, clockwise: false)
+        ring.path = arc
+        let m = CGMutablePath()
+        m.move(to: CGPoint(x: d * 0.29, y: d * 0.5))
+        m.addLine(to: CGPoint(x: d * 0.44, y: d * 0.65))
+        m.addLine(to: CGPoint(x: d * 0.72, y: d * 0.35))
+        mark.path = m
+    }
+
+    /// Not working: what the click will do ("Commit 3", "Push 2", "Up to date").
+    func setIdle(_ title: String, symbol: String?, enabled: Bool) {
+        idleTitle = title
+        idleSymbol = symbol
+        guard phase == .idle else { return }
+        isEnabled = enabled
+        setText(title, symbol: symbol, color: enabled ? .labelColor : .secondaryLabelColor)
+    }
+
+    /// Committing (the ring's first third), pushing (the rest, creeping until git
+    /// is done), done (full, then a check), failed (red).
+    func run(_ phase: Phase, label: String) {
+        self.phase = phase
+        settle?.cancel()
+        creep?.invalidate()
+        isEnabled = true // full-strength label while it works; clicks wait for idle (see gitClicked)
+        badge.isHidden = phase == .idle
+        // Room for the ring before the label.
+        attributedTitle = NSAttributedString(string: "\u{2007}\u{2007}\u{2007}" + label, attributes: [
+            .font: NSFont.systemFont(ofSize: 11.5, weight: .medium), .foregroundColor: phase == .failed ? NSColor.systemRed : NSColor.labelColor,
+        ])
+        let green = NSColor.systemGreen.cgColor
+        track.strokeColor = NSColor.labelColor.withAlphaComponent(0.15).cgColor
+        ring.strokeColor = phase == .failed ? NSColor.systemRed.cgColor : phase == .done ? green : NSColor.controlAccentColor.cgColor
+        mark.strokeColor = green
+        switch phase {
+        case .idle:
+            ring.strokeEnd = 0
+            mark.strokeEnd = 0
+            setIdle(idleTitle, symbol: idleSymbol, enabled: true)
+        case .committing:
+            mark.strokeEnd = 0
+            fill(to: 0.35, duration: 0.5)
+        case .pushing:
+            fill(to: 0.5, duration: 0.3)
+            // No real percentage from git: creep toward the end, slower and slower, until it answers.
+            creep = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    let now = self.ring.presentation()?.strokeEnd ?? self.ring.strokeEnd
+                    self.fill(to: now + (0.92 - now) * 0.06, duration: 0.1)
+                }
+            }
+        case .done:
+            fill(to: 1, duration: 0.25)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.showCheck() }
+            later(2.4)
+        case .failed:
+            ring.strokeEnd = 1
+            later(4)
+        }
+        fit()
+        superview?.needsLayout = true
+        needsLayout = true
+    }
+
+    private func fill(to end: CGFloat, duration: CFTimeInterval) {
+        let from = ring.presentation()?.strokeEnd ?? ring.strokeEnd
+        let a = CABasicAnimation(keyPath: "strokeEnd")
+        a.fromValue = from
+        a.toValue = end
+        a.duration = duration
+        a.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        ring.strokeEnd = end
+        ring.add(a, forKey: "fill")
+    }
+
+    /// The check draws itself, and the badge pops.
+    private func showCheck() {
+        guard phase == .done else { return }
+        let draw = CABasicAnimation(keyPath: "strokeEnd")
+        draw.fromValue = 0
+        draw.toValue = 1
+        draw.duration = 0.25
+        mark.strokeEnd = 1
+        mark.add(draw, forKey: "draw")
+        let pop = CAKeyframeAnimation(keyPath: "transform.scale")
+        pop.values = [1, 1.3, 0.95, 1]
+        pop.keyTimes = [0, 0.35, 0.7, 1]
+        pop.duration = 0.4
+        badge.add(pop, forKey: "pop")
+    }
+
+    private func later(_ seconds: Double) {
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.run(.idle, label: "")
+            self.onSettled?()
+        }
+        settle = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + seconds, execute: work)
+    }
 }

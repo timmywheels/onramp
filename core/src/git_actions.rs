@@ -65,6 +65,20 @@ pub fn commit_all(repo_root: String, message: String) -> Result<String, CoreErro
     Ok(text(&git(&repo_root, &["rev-parse", "--short", "HEAD"])?))
 }
 
+/// Switch to `branch`: a local one, or a remote one ("origin/x") as a local
+/// branch tracking it. Never forces: git says why if your changes are in the way.
+#[uniffi::export]
+pub fn switch_branch(repo_root: String, branch: String) -> Result<String, CoreError> {
+    let remote = git(&repo_root, &["show-ref", "--verify", "--quiet", &format!("refs/remotes/{branch}")])?.status.success();
+    let local_exists = git(&repo_root, &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")])?.status.success();
+    let name = if remote && !local_exists { branch.split_once('/').map(|(_, b)| b.to_string()).unwrap_or(branch.clone()) } else { branch.clone() };
+    let out = git(&repo_root, &["switch", "--quiet", &name])?;
+    if !out.status.success() {
+        return Err(failure(&out));
+    }
+    Ok(name)
+}
+
 /// Push the current branch to its upstream; with none yet, publish it to
 /// `origin` and track it. Never forces.
 #[uniffi::export]

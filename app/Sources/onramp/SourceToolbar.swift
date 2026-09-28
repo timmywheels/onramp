@@ -192,6 +192,25 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
                 add(to: menu, title: wt.branch.map { "\(name)  —  \($0)" } ?? name, action: #selector(openRepo(_:)), object: wt.path, on: wt.isCurrent)
             }
         }
+        // Branches: switch this repo to another (recent first; the rest, and remote ones, under More).
+        let branches = (try? listBranches(repoRoot: repoPath)) ?? []
+        let current = (try? branchStatus(repoRoot: repoPath))?.branch
+        let local = branches.filter { !$0.hasPrefix("origin/") }
+        if !branches.isEmpty {
+            menu.addItem(.sectionHeader(title: "Switch Branch"))
+            for b in local.prefix(8) {
+                add(to: menu, title: b, action: #selector(switchBranch(_:)), object: b, on: b == current)
+            }
+            let rest = local.dropFirst(8) + branches.filter { $0.hasPrefix("origin/") && !local.contains(String($0.dropFirst("origin/".count))) }
+            if !rest.isEmpty {
+                let more = NSMenuItem(title: "More Branches", action: nil, keyEquivalent: "")
+                let sub = NSMenu()
+                for b in rest.prefix(150) { add(to: sub, title: b, action: #selector(switchBranch(_:)), object: b) }
+                more.submenu = sub
+                menu.addItem(more)
+            }
+            menu.addItem(.separator())
+        }
         let shown = Set(worktrees.map(\.path) + [repoPath])
         let recent = RecentProjects.list.filter { !shown.contains($0) }
         if !recent.isEmpty {
@@ -309,6 +328,11 @@ final class SourceToolbar: NSObject, NSToolbarDelegate, NSMenuDelegate {
     @objc private func reopenPR(_ sender: NSMenuItem) {
         guard let n = sender.representedObject as? Int else { return }
         onViewPullRequest?(n)
+    }
+
+    @objc private func switchBranch(_ sender: NSMenuItem) {
+        guard let b = sender.representedObject as? String, sender.state != .on else { return }
+        review?.switchBranch(b) { [weak self] in self?.refreshTitles() }
     }
 
     @objc private func openRepo(_ sender: NSMenuItem) {

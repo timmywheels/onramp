@@ -38,6 +38,9 @@ pub struct Entry {
     /// The GitHub review comment this entry is (posted from here, or pulled from there).
     #[serde(default)]
     pub github_id: Option<u64>,
+    /// On a PR, kept off GitHub: for you and your agent only.
+    #[serde(default)]
+    pub local: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
@@ -391,7 +394,7 @@ pub fn add_thread(repo_root: String, path: String, text: String, line: u32, old_
             path,
             anchor,
             status: ThreadStatus::Open,
-            entries: vec![Entry { author, body, created_at: now(), pending, github_id: None }],
+            entries: vec![Entry { author, body, created_at: now(), pending, github_id: None, local: false }],
             resolved_by: None,
             claim: None,
             source: None,
@@ -411,7 +414,7 @@ pub fn reply(repo_root: String, id: String, author: String, body: String, pendin
         if t.claim.as_ref().is_some_and(|c| c.agent == author) {
             t.claim = None; // it answered: the thread is back with you, not "working"
         }
-        t.entries.push(Entry { author, body, created_at: now(), pending, github_id: None });
+        t.entries.push(Entry { author, body, created_at: now(), pending, github_id: None, local: false });
         Ok(t.clone())
     })
 }
@@ -422,7 +425,7 @@ pub fn set_resolved(repo_root: String, id: String, resolved: bool, author: Strin
     modify(&repo_root, |store| {
         let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
         if let Some(body) = note.filter(|n| !n.trim().is_empty()) {
-            t.entries.push(Entry { author: author.clone(), body, created_at: now(), pending: false, github_id: None });
+            t.entries.push(Entry { author: author.clone(), body, created_at: now(), pending: false, github_id: None, local: false });
         }
         t.status = if resolved { ThreadStatus::Resolved } else { ThreadStatus::Open };
         t.resolved_by = resolved.then_some(author);
@@ -583,6 +586,16 @@ pub struct GhSync {
     pub removed: u32,
 }
 
+/// Keep entry `index` of a thread off GitHub (a note for your agent, not the PR).
+#[uniffi::export]
+pub fn keep_local(repo_root: String, id: String, index: u32) -> Result<Thread, CoreError> {
+    modify(&repo_root, |store| {
+        let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
+        t.entries.get_mut(index as usize).ok_or_else(|| not_found(&id))?.local = true;
+        Ok(t.clone())
+    })
+}
+
 /// Entry `index` of a thread is GitHub comment `comment_id` on PR `pr` (you just posted it).
 #[uniffi::export]
 pub fn link_github(repo_root: String, id: String, pr: u32, index: u32, comment_id: u64) -> Result<Thread, CoreError> {
@@ -607,7 +620,7 @@ pub fn sync_github_threads(repo_root: String, pr: u32, me: String, my_login: Str
     modify(&repo_root, |store| {
         let mut sync = GhSync { added: 0, replies: 0, changed: 0, removed: 0 };
         let author = |login: &str| if !my_login.is_empty() && login == my_login { me.clone() } else { login.to_string() };
-        let entry = |c: &GhComment| Entry { author: author(&c.login), body: c.body.clone(), created_at: c.created_at, pending: false, github_id: Some(c.id) };
+        let entry = |c: &GhComment| Entry { author: author(&c.login), body: c.body.clone(), created_at: c.created_at, pending: false, github_id: Some(c.id), local: false };
         for gh in &threads {
             if store.hidden_github.contains(&gh.thread_id) {
                 continue;

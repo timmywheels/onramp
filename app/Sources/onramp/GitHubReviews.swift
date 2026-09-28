@@ -148,12 +148,27 @@ extension GitHub {
 /// Keeps a PR's threads here and on GitHub in step: what you write goes up,
 /// what others write comes down. Agents' replies stay here.
 enum GitHubReviewSync {
-    /// Bring the PR's GitHub threads in. Returns whether anything changed.
-    static func pull(repo: String, pr: Int, me: String, base: String) throws -> Bool {
+    /// Bring the PR's GitHub threads in: what changed here.
+    @discardableResult
+    static func pull(repo: String, pr: Int, me: String, base: String) throws -> GhSync {
         let (threads, complete) = try GitHub.reviewThreads(repo: repo, number: pr, base: base)
-        let s = try syncGithubThreads(repoRoot: repo, pr: UInt32(pr), me: me, myLogin: GitHub.myLogin(repo: repo) ?? "", threads: threads, complete: complete)
-        return s.added + s.replies + s.changed + s.removed > 0
+        return try syncGithubThreads(repoRoot: repo, pr: UInt32(pr), me: me, myLogin: GitHub.myLogin(repo: repo) ?? "", threads: threads, complete: complete)
     }
+}
+
+extension GhSync {
+    var any: Bool { added + replies + changed + removed > 0 }
+
+    /// "2 new threads, 1 reply" (nil: nothing new).
+    var summary: String? {
+        let n = { (k: UInt32, one: String, many: String) in k == 0 ? nil : "\(k) \(k == 1 ? one : many)" }
+        let parts = [n(added, "new thread", "new threads"), n(replies, "new reply", "new replies"),
+                     n(changed, "update", "updates"), n(removed, "deleted thread", "deleted threads")].compactMap { $0 }
+        return parts.isEmpty ? nil : parts.joined(separator: ", ")
+    }
+}
+
+extension GitHubReviewSync {
 
     /// Where `thread` is in the PR as GitHub has it (its pushed head, or the base for deleted lines).
     static func place(_ thread: Thread, repo: String, sha: String, base: String) throws -> GitHub.Place {
@@ -204,7 +219,7 @@ enum GitHubReviewSync {
         // New threads of yours, still pending.
         var fresh: [(Thread, GitHub.Place)] = []
         for t in threads where t.github == nil && t.source == nil {
-            guard let first = t.entries.first, first.pending, first.author == me else { continue }
+            guard let first = t.entries.first, first.pending, first.author == me, !first.local else { continue }
             do { fresh.append((t, try place(t, repo: repo, sha: sha, base: base))) } catch { notes.append(message(for: error)) }
         }
         // Your PR: GitHub won't take an approval or a change request from you.
@@ -221,7 +236,7 @@ enum GitHubReviewSync {
         }
         // Pending replies on threads that are on GitHub.
         for t in try loadThreads(repoRoot: repo) where t.github?.pr == UInt32(pr) {
-            for (k, e) in t.entries.enumerated() where e.pending && e.author == me && e.githubId == nil && k > 0 {
+            for (k, e) in t.entries.enumerated() where e.pending && e.author == me && e.githubId == nil && !e.local && k > 0 {
                 do { try publishReply(t, index: k, repo: repo, pr: pr) } catch { notes.append(message(for: error)) }
             }
         }

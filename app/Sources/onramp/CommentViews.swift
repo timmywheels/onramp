@@ -76,6 +76,9 @@ final class CommentInput: NSView {
     /// "Send to Claude": post it and have your agent take it on now (⌘⇧↩).
     private let send = NSButton(title: "", target: nil, action: nil)
     private let hint = NSTextField(labelWithString: "⌘↩ to save · Esc to cancel")
+    /// On a PR: whether this goes to GitHub too, or stays here for you and your agent.
+    private let githubBox = NSButton(checkboxWithTitle: "Post to GitHub", target: nil, action: nil)
+    var onGitHubToggle: ((Bool) -> Void)?
     private var primaryTitle = ""
     var onSubmit: ((String) -> Void)?
     var onSend: ((String) -> Void)?
@@ -91,6 +94,17 @@ final class CommentInput: NSView {
         updateHint()
         needsLayout = true
     }
+
+    /// Show "Post to GitHub" (nil hides it: not a PR, or a thread that's only here), checked or not.
+    func setGitHub(_ on: Bool?) {
+        githubBox.isHidden = on == nil
+        githubBox.state = on == true ? .on : .off
+        githubBox.toolTip = "Checked: this goes to the pull request on GitHub. Unchecked: only in Onramp, for you and your agent."
+        updateHint()
+        needsLayout = true
+    }
+
+    @objc private func githubToggled() { onGitHubToggle?(githubBox.state == .on) }
 
     /// Offer "Send to <agent>" (nil hides it).
     func setSend(_ agent: String?) {
@@ -151,6 +165,12 @@ final class CommentInput: NSView {
         hint.font = .systemFont(ofSize: 10.5)
         hint.textColor = DiffStyle.foldText
         addSubview(hint)
+        githubBox.controlSize = .small
+        githubBox.font = .systemFont(ofSize: 11)
+        githubBox.target = self
+        githubBox.action = #selector(githubToggled)
+        githubBox.isHidden = true
+        addSubview(githubBox)
     }
 
     required init?(coder: NSCoder) { fatalError() }
@@ -172,8 +192,11 @@ final class CommentInput: NSView {
             left = secondary.frame.minX
         }
         cancel.frame.origin = NSPoint(x: left - cancel.frame.width - 6, y: y + 2)
+        githubBox.sizeToFit()
+        githubBox.frame.origin = NSPoint(x: 0, y: y + 4)
         hint.sizeToFit()
-        hint.frame.origin = NSPoint(x: 0, y: y + 7)
+        hint.frame.origin = NSPoint(x: githubBox.isHidden ? 0 : githubBox.frame.maxX + 10, y: y + 7)
+        hint.isHidden = hint.frame.maxX > cancel.frame.minX - 6 // no room: the buttons matter more
     }
 
     func focus() { window?.makeFirstResponder(textView) }
@@ -251,6 +274,9 @@ final class CommentThreadView: NSView {
     var sendAgent: String? { didSet { replyInput?.setSend(sendAgent) } }
     /// A review is in progress: new replies default to joining it.
     var inReview = false
+    /// On a PR with GitHub sync: whether replies go to GitHub now (nil: not a PR view).
+    var postsToGitHub: Bool?
+    var onGitHubToggle: ((Bool) -> Void)?
     var onStartReply: (() -> Void)?
     var onCancelReply: (() -> Void)?
     var onToggleResolved: (() -> Void)?
@@ -336,6 +362,8 @@ final class CommentThreadView: NSView {
                 input.onSecondary = { [weak self] text in self?.onReply?(text, !(self?.inReview ?? false)) }
                 input.onCancel = { [weak self] in self?.onCancelReply?() }
                 input.setSend(sendAgent)
+                input.setGitHub(located.thread.github == nil ? nil : postsToGitHub) // a thread only here: replies stay here
+                input.onGitHubToggle = { [weak self] on in self?.onGitHubToggle?(on) }
                 input.onSend = { [weak self] text in self?.onReplyAndSend?(text) }
                 addSubview(input)
                 replyInput = input
@@ -426,6 +454,10 @@ final class CommentThreadView: NSView {
             head.append(NSAttributedString(string: "  " + ago, attributes: meta))
             if e.pending {
                 head.append(NSAttributedString(string: "  Pending", attributes: [.font: CommentMetrics.metaFont, .foregroundColor: DiffStyle.accent]))
+            }
+            if postsToGitHub != nil { // a PR: say which words are on GitHub and which only here
+                let tag = e.githubId != nil ? "  on GitHub" : e.local || t.entries.first?.local == true ? "  only in Onramp" : nil
+                if let tag { head.append(NSAttributedString(string: tag, attributes: meta)) }
             }
             head.draw(at: NSPoint(x: p, y: y))
             y += CommentMetrics.metaHeight
