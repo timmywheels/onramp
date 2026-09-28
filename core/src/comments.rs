@@ -35,6 +35,9 @@ pub struct Entry {
     /// Part of a review that hasn't been submitted yet: only its author sees it.
     #[serde(default)]
     pub pending: bool,
+    /// The GitHub review comment this entry is (posted from here, or pulled from there).
+    #[serde(default)]
+    pub github_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, uniffi::Enum)]
@@ -85,6 +88,16 @@ pub struct Thread {
     /// ("dismissed"). None: a normal thread (including findings you kept).
     #[serde(default)]
     pub triage: Option<String>,
+    /// On a pull request's GitHub review: which PR, and GitHub's thread id once known.
+    #[serde(default)]
+    pub github: Option<GitHubLink>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, uniffi::Record)]
+pub struct GitHubLink {
+    pub pr: u32,
+    /// The review thread's GraphQL id (resolving needs it). None until a sync sees it.
+    pub thread_id: Option<String>,
 }
 
 /// One problem a reviewer reports: where, how bad, and why.
@@ -267,6 +280,9 @@ struct Store {
     threads: Vec<Thread>,
     #[serde(default)]
     reviews: Vec<Review>,
+    /// GitHub threads you deleted here that aren't yours to delete there: a sync leaves them out.
+    #[serde(default)]
+    hidden_github: Vec<String>,
 }
 
 fn io(e: std::io::Error) -> CoreError {
@@ -297,7 +313,7 @@ pub fn comments_path(repo_root: String) -> Result<String, CoreError> {
 fn load(dir: &Path) -> Result<Store, CoreError> {
     match fs::read(dir.join("comments.json")) {
         Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| CoreError::Io { message: format!("comments.json: {e}") }),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store { version: 1, threads: vec![], reviews: vec![] }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Store { version: 1, ..Default::default() }),
         Err(e) => Err(io(e)),
     }
 }
@@ -348,6 +364,14 @@ fn not_found(id: &str) -> CoreError {
     CoreError::Io { message: format!("no comment with id {id}") }
 }
 
+/// Line `line` (0-based) of `text`, with two lines of context each side.
+fn make_anchor(text: &str, line: u32, old_side: bool) -> Anchor {
+    let lines: Vec<&str> = split_lines(text);
+    let i = line as usize;
+    let get = |r: std::ops::Range<usize>| r.filter_map(|k| lines.get(k).map(|s| s.to_string())).collect::<Vec<_>>();
+    Anchor { line, old_side, text: lines.get(i).unwrap_or(&"").to_string(), before: get(i.saturating_sub(2)..i), after: get(i + 1..i + 3) }
+}
+
 // MARK: API
 
 #[uniffi::export]
@@ -360,28 +384,20 @@ pub fn load_threads(repo_root: String) -> Result<Vec<Thread>, CoreError> {
 /// For a deleted line, pass the HEAD version as `text` and `old_side: true`.
 /// `pending`: part of a review in progress (published by `submit_review`).
 pub fn add_thread(repo_root: String, path: String, text: String, line: u32, old_side: bool, author: String, body: String, pending: bool) -> Result<Thread, CoreError> {
-    let lines: Vec<&str> = split_lines(&text);
-    let i = line as usize;
-    let get = |r: std::ops::Range<usize>| r.filter_map(|k| lines.get(k).map(|s| s.to_string())).collect::<Vec<_>>();
-    let anchor = Anchor {
-        line,
-        old_side,
-        text: lines.get(i).unwrap_or(&"").to_string(),
-        before: get(i.saturating_sub(2)..i),
-        after: get(i + 1..i + 3),
-    };
+    let anchor = make_anchor(&text, line, old_side);
     modify(&repo_root, |store| {
         let thread = Thread {
             id: new_id(&store.threads),
             path,
             anchor,
             status: ThreadStatus::Open,
-            entries: vec![Entry { author, body, created_at: now(), pending }],
+            entries: vec![Entry { author, body, created_at: now(), pending, github_id: None }],
             resolved_by: None,
             claim: None,
             source: None,
             severity: None,
             triage: None,
+            github: None,
         };
         store.threads.push(thread.clone());
         Ok(thread)
@@ -395,7 +411,7 @@ pub fn reply(repo_root: String, id: String, author: String, body: String, pendin
         if t.claim.as_ref().is_some_and(|c| c.agent == author) {
             t.claim = None; // it answered: the thread is back with you, not "working"
         }
-        t.entries.push(Entry { author, body, created_at: now(), pending });
+        t.entries.push(Entry { author, body, created_at: now(), pending, github_id: None });
         Ok(t.clone())
     })
 }
@@ -406,7 +422,7 @@ pub fn set_resolved(repo_root: String, id: String, resolved: bool, author: Strin
     modify(&repo_root, |store| {
         let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
         if let Some(body) = note.filter(|n| !n.trim().is_empty()) {
-            t.entries.push(Entry { author: author.clone(), body, created_at: now(), pending: false });
+            t.entries.push(Entry { author: author.clone(), body, created_at: now(), pending: false, github_id: None });
         }
         t.status = if resolved { ThreadStatus::Resolved } else { ThreadStatus::Open };
         t.resolved_by = resolved.then_some(author);
@@ -447,6 +463,10 @@ pub fn release_thread(repo_root: String, id: String, agent: String) -> Result<Th
 #[uniffi::export]
 pub fn delete_thread(repo_root: String, id: String) -> Result<(), CoreError> {
     modify(&repo_root, |store| {
+        // A GitHub thread would come back with the next sync: remember you deleted it.
+        if let Some(gh) = store.threads.iter().find(|t| t.id == id).and_then(|t| t.github.as_ref()?.thread_id.clone()) {
+            store.hidden_github.push(gh);
+        }
         let before = store.threads.len();
         store.threads.retain(|t| t.id != id);
         if store.threads.len() == before { Err(not_found(&id)) } else { Ok(()) }
@@ -531,6 +551,141 @@ fn submitted_only(threads: Vec<Thread>) -> Vec<Thread> {
         .collect()
 }
 
+// MARK: GitHub
+
+/// A review comment as GitHub has it.
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct GhComment {
+    pub id: u64,
+    pub login: String,
+    pub body: String,
+    pub created_at: u64, // unix seconds
+}
+
+/// A PR review thread as GitHub has it, with the file its line points into
+/// (the PR's head for the new side, its base for `old_side`).
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct GhThread {
+    pub thread_id: String,
+    pub path: String,
+    pub line: u32, // 0-based
+    pub old_side: bool,
+    pub text: String,
+    pub resolved: bool,
+    pub comments: Vec<GhComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct GhSync {
+    pub added: u32,
+    pub replies: u32,
+    pub changed: u32,
+    pub removed: u32,
+}
+
+/// Entry `index` of a thread is GitHub comment `comment_id` on PR `pr` (you just posted it).
+#[uniffi::export]
+pub fn link_github(repo_root: String, id: String, pr: u32, index: u32, comment_id: u64) -> Result<Thread, CoreError> {
+    modify(&repo_root, |store| {
+        let t = store.threads.iter_mut().find(|t| t.id == id).ok_or_else(|| not_found(&id))?;
+        let e = t.entries.get_mut(index as usize).ok_or_else(|| not_found(&id))?;
+        e.github_id = Some(comment_id);
+        e.pending = false;
+        if t.github.as_ref().map(|g| g.pr) != Some(pr) {
+            t.github = Some(GitHubLink { pr, thread_id: None });
+        }
+        Ok(t.clone())
+    })
+}
+
+/// Bring PR `pr`'s GitHub review threads in: new threads and replies are added,
+/// edits and resolved/unresolved follow GitHub. Your comments (`my_login`) show
+/// as `me`. With `complete` (every thread was fetched), threads deleted on
+/// GitHub go here too. Entries only here (e.g. agents' replies) stay.
+#[uniffi::export]
+pub fn sync_github_threads(repo_root: String, pr: u32, me: String, my_login: String, threads: Vec<GhThread>, complete: bool) -> Result<GhSync, CoreError> {
+    modify(&repo_root, |store| {
+        let mut sync = GhSync { added: 0, replies: 0, changed: 0, removed: 0 };
+        let author = |login: &str| if !my_login.is_empty() && login == my_login { me.clone() } else { login.to_string() };
+        let entry = |c: &GhComment| Entry { author: author(&c.login), body: c.body.clone(), created_at: c.created_at, pending: false, github_id: Some(c.id) };
+        for gh in &threads {
+            if store.hidden_github.contains(&gh.thread_id) {
+                continue;
+            }
+            let ids: Vec<u64> = gh.comments.iter().map(|c| c.id).collect();
+            let found = store.threads.iter().position(|t| {
+                t.github.as_ref().is_some_and(|g| g.pr == pr && g.thread_id.as_deref() == Some(gh.thread_id.as_str()))
+            });
+            // One you posted from here: its comment ids say which thread it became.
+            let found = found.or_else(|| store.threads.iter().position(|t| t.entries.iter().any(|e| e.github_id.is_some_and(|i| ids.contains(&i)))));
+            let Some(k) = found else {
+                if gh.comments.is_empty() {
+                    continue;
+                }
+                let id = new_id(&store.threads);
+                store.threads.push(Thread {
+                    id,
+                    path: gh.path.clone(),
+                    anchor: make_anchor(&gh.text, gh.line, gh.old_side),
+                    status: if gh.resolved { ThreadStatus::Resolved } else { ThreadStatus::Open },
+                    entries: gh.comments.iter().map(entry).collect(),
+                    resolved_by: gh.resolved.then(|| "GitHub".to_string()),
+                    claim: None,
+                    source: None,
+                    severity: None,
+                    triage: None,
+                    github: Some(GitHubLink { pr, thread_id: Some(gh.thread_id.clone()) }),
+                });
+                sync.added += 1;
+                continue;
+            };
+            let t = &mut store.threads[k];
+            t.github = Some(GitHubLink { pr, thread_id: Some(gh.thread_id.clone()) });
+            for c in &gh.comments {
+                match t.entries.iter_mut().find(|e| e.github_id == Some(c.id)) {
+                    Some(e) if e.body != c.body => {
+                        e.body = c.body.clone();
+                        sync.changed += 1;
+                    }
+                    Some(_) => {}
+                    None => {
+                        t.entries.push(entry(c));
+                        sync.replies += 1;
+                    }
+                }
+            }
+            if gh.resolved != (t.status == ThreadStatus::Resolved) {
+                t.status = if gh.resolved { ThreadStatus::Resolved } else { ThreadStatus::Open };
+                t.resolved_by = gh.resolved.then(|| "GitHub".to_string());
+                t.claim = None;
+                sync.changed += 1;
+            }
+        }
+        if complete {
+            let live: Vec<&str> = threads.iter().map(|t| t.thread_id.as_str()).collect();
+            let before = store.threads.len();
+            store.threads.retain(|t| match &t.github {
+                Some(GitHubLink { pr: p, thread_id: Some(id) }) if *p == pr => live.contains(&id.as_str()),
+                _ => true,
+            });
+            sync.removed = (before - store.threads.len()) as u32;
+        }
+        Ok(sync)
+    })
+}
+
+/// Whether a thread belongs in what's on screen: a GitHub thread only on its own PR.
+#[uniffi::export]
+pub fn thread_in_view(thread: Thread, pr: Option<u32>) -> bool {
+    thread.github.map_or(true, |g| Some(g.pr) == pr)
+}
+
+/// The PR the review shows, if it's a PR.
+fn current_pr(repo_root: &str) -> Option<u32> {
+    let choice = crate::repo::review_choice(repo_root.to_string());
+    (choice.mode == crate::repo::ReviewMode::PullRequest).then_some(choice.pr).flatten()
+}
+
 // MARK: Anchoring
 
 fn split_lines(text: &str) -> Vec<&str> {
@@ -613,9 +768,11 @@ fn located_all(repo_root: &str, threads: Vec<Thread>) -> Vec<LocatedThread> {
 /// Threads as JSON (with current line numbers) for agents and scripts.
 #[uniffi::export]
 pub fn export_json(repo_root: String, include_resolved: bool) -> Result<String, CoreError> {
+    let pr = current_pr(&repo_root);
     let threads: Vec<Thread> = submitted_only(load_threads(repo_root.clone())?)
         .into_iter()
         .filter(|t| include_resolved || t.status == ThreadStatus::Open)
+        .filter(|t| thread_in_view(t.clone(), pr))
         .collect();
     Ok(serde_json::to_string_pretty(&located_all(&repo_root, threads)).expect("serializable"))
 }
@@ -624,9 +781,11 @@ pub fn export_json(repo_root: String, include_resolved: bool) -> Result<String, 
 /// the exact command to resolve it.
 #[uniffi::export]
 pub fn export_markdown(repo_root: String, include_resolved: bool) -> Result<String, CoreError> {
+    let pr = current_pr(&repo_root);
     let threads: Vec<Thread> = submitted_only(load_threads(repo_root.clone())?)
         .into_iter()
         .filter(|t| include_resolved || t.status == ThreadStatus::Open)
+        .filter(|t| thread_in_view(t.clone(), pr))
         .collect();
     let located = located_all(&repo_root, threads);
     let open = located.iter().filter(|l| l.thread.status == ThreadStatus::Open).count();
@@ -850,6 +1009,52 @@ mod tests {
         add_thread(root.clone(), "a.txt".into(), "one\ntwo\n".into(), 0, false, "you".into(), "oops".into(), true).unwrap();
         discard_pending(root.clone(), "you".into()).unwrap();
         assert_eq!(load_threads(root.clone()).unwrap().len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn github_threads_sync_both_ways() {
+        let dir = std::env::temp_dir().join(format!("pp-github-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        Command::new("git").args(["init", "-q"]).current_dir(&dir).status().unwrap();
+        let root = dir.to_string_lossy().to_string();
+        let text = "one\ntwo\nthree\n".to_string();
+        let c = |id: u64, login: &str, body: &str| GhComment { id, login: login.into(), body: body.into(), created_at: 1 };
+        let gh = |id: &str, resolved: bool, comments: Vec<GhComment>| GhThread {
+            thread_id: id.into(), path: "a.txt".into(), line: 1, old_side: false, text: text.clone(), resolved, comments,
+        };
+
+        // Posted from here: linking it, then the sync recognizes it by comment id.
+        let mine = add_thread(root.clone(), "a.txt".into(), text.clone(), 0, false, "Tim".into(), "rename this".into(), false).unwrap();
+        link_github(root.clone(), mine.id.clone(), 7, 0, 100).unwrap();
+        reply(root.clone(), mine.id.clone(), "Claude".into(), "done".into(), false).unwrap(); // stays local
+
+        let s = sync_github_threads(root.clone(), 7, "Tim".into(), "tim".into(),
+            vec![gh("T1", false, vec![c(100, "tim", "rename this"), c(101, "ana", "+1")]), gh("T2", false, vec![c(200, "ana", "why?")])], true).unwrap();
+        assert_eq!((s.added, s.replies, s.changed, s.removed), (1, 1, 0, 0));
+        let all = load_threads(root.clone()).unwrap();
+        let t1 = all.iter().find(|t| t.id == mine.id).unwrap();
+        assert_eq!(t1.github.as_ref().unwrap().thread_id.as_deref(), Some("T1"));
+        assert_eq!(t1.entries.iter().map(|e| e.author.as_str()).collect::<Vec<_>>(), ["Tim", "Claude", "ana"]);
+        let t2 = all.iter().find(|t| t.id != mine.id).unwrap();
+        assert_eq!((t2.anchor.text.as_str(), t2.entries[0].author.as_str()), ("two", "ana"));
+
+        // Same again: nothing new. Then resolved + edited on GitHub; T2 deleted there.
+        let s = sync_github_threads(root.clone(), 7, "Tim".into(), "tim".into(),
+            vec![gh("T1", false, vec![c(100, "tim", "rename this"), c(101, "ana", "+1")]), gh("T2", false, vec![c(200, "ana", "why?")])], true).unwrap();
+        assert_eq!((s.added, s.replies, s.changed, s.removed), (0, 0, 0, 0));
+        let s = sync_github_threads(root.clone(), 7, "Tim".into(), "tim".into(),
+            vec![gh("T1", true, vec![c(100, "tim", "rename it"), c(101, "ana", "+1")])], true).unwrap();
+        assert_eq!((s.changed, s.removed), (2, 1));
+        let all = load_threads(root.clone()).unwrap();
+        assert_eq!((all.len(), all[0].status, all[0].entries[0].body.as_str()), (1, ThreadStatus::Resolved, "rename it"));
+
+        // Another PR's threads aren't in this one; one you delete stays deleted.
+        assert!(!thread_in_view(all[0].clone(), Some(8)) && thread_in_view(all[0].clone(), Some(7)) && !thread_in_view(all[0].clone(), None));
+        delete_thread(root.clone(), all[0].id.clone()).unwrap();
+        let s = sync_github_threads(root.clone(), 7, "Tim".into(), "tim".into(), vec![gh("T1", true, vec![c(100, "tim", "rename it")])], true).unwrap();
+        assert_eq!(s.added, 0);
         let _ = fs::remove_dir_all(&dir);
     }
 }

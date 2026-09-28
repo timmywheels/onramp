@@ -11,6 +11,7 @@ struct Settings: Codable, Equatable {
     var fontLigatures = true               // coding ligatures like -> => != (fonts that have them)
     var ghPath = ""                        // GitHub CLI; "" = find it (Homebrew, ~/.local/bin, your shell's PATH)
     var ciComments = true                  // CI failures (check annotations) show up as review threads
+    var githubComments = true              // in a PR view: your comments go to its GitHub review, and its GitHub threads come here
     var menuBar = true                     // the road sign in the menu bar: what your agents are doing
     var dockIcon = true                    // false: menu bar only (needs menu_bar on)
     var agentSession = "auto"              // agent_session: auto (a primed Claude session per review) | manual | off
@@ -34,6 +35,7 @@ struct Settings: Codable, Equatable {
         fontLigatures = try c.decodeIfPresent(Bool.self, forKey: .fontLigatures) ?? d.fontLigatures
         ghPath = try c.decodeIfPresent(String.self, forKey: .ghPath) ?? d.ghPath
         ciComments = try c.decodeIfPresent(Bool.self, forKey: .ciComments) ?? d.ciComments
+        githubComments = try c.decodeIfPresent(Bool.self, forKey: .githubComments) ?? d.githubComments
         menuBar = try c.decodeIfPresent(Bool.self, forKey: .menuBar) ?? d.menuBar
         dockIcon = try c.decodeIfPresent(Bool.self, forKey: .dockIcon) ?? d.dockIcon
         agentSession = try c.decodeIfPresent(String.self, forKey: .agentSession) ?? d.agentSession

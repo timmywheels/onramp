@@ -34,6 +34,11 @@ TSX, Rust, Go, Python, CSS and YAML. Re-run it any time to reset.
   and choose who to send it to. Submitting publishes the pending comments and can start
   Claude Code (`claude -p`) or Codex (`codex exec`) in the repo to address them; their fixes and
   replies show up live. Pending comments are invisible to agents until you submit.
+- **On a pull request, comments are GitHub's too.** **Comment** posts it to the PR right away;
+  **Start a review** batches them and **Submit review** posts one GitHub review with your summary
+  and verdict (on your own PR, GitHub takes it as a comment). Replies, edits, resolving and
+  deleting your comments follow. The PR's GitHub threads come in when you open it, on ⌘R, and
+  every 90 s. Agents' replies stay in Onramp. Turn it off with `"github_comments": false`.
 - **Toolbar, left:** switch project or worktree (this repo's worktrees, recent projects, ⌘O to open a folder).
 - **Toolbar, right — what to review:** *All changes on this branch* (committed or not, against where it left
   its base branch — `origin/HEAD`, else main/master, or pick one under *Compare Against*), *Uncommitted

@@ -135,6 +135,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
         document.onFileChanged = { [weak self] i in self?.onFileChanged?(i) }
         document.onCurrentFile = { [weak self] i in self?.onCurrentFile?(i) }
         document.onNotice = { [weak self] text in self?.notice.show(text) }
+        document.onGitHubChanged = { [weak self] in self?.syncGitHub(force: true) }
         QuickSend.onChange = { [weak self] in self?.updateAgents() }
         NotificationCenter.default.addObserver(
             self, selector: #selector(didScroll), name: NSView.boundsDidChangeNotification, object: scrollView.contentView
@@ -211,6 +212,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             self.base = base
             document.baseRev = base.rev
             document.readOnly = base.target != nil // a commit or PR isn't on disk: nothing to edit
+            document.prNumber = base.mode == .pullRequest ? choice.pr.map(Int.init) : nil
             let pr = base.mode == .pullRequest ? choice.pr.flatMap { GitHub.cached(repo: repoPath, number: Int($0)) } : nil
             prBar.set(pr)
             prBar.isHidden = pr == nil
@@ -220,6 +222,7 @@ final class ReviewView: NSView, NSPopoverDelegate {
             refreshGit()
             refreshMerge()
             syncCI()
+            syncGitHub()
         } catch {
             statusLabel.stringValue = "Error: \(error)"
             return
@@ -600,6 +603,34 @@ final class ReviewView: NSView, NSPopoverDelegate {
         return p.terminationStatus == 0 && !sha.isEmpty ? sha : nil
     }
 
+    private var githubSyncedAt: [Int: Date] = [:]
+    private var githubSyncing = false
+    private var githubTimer: Timer?
+
+    /// Bring the PR's GitHub review threads in (at most every 30 s; `force` after you post, and on ⌘R).
+    /// While a PR is on screen this repeats every 90 s, so others' replies show up.
+    func syncGitHub(force: Bool = false) {
+        guard let pr = document.githubPR else { githubTimer?.invalidate(); githubTimer = nil; return }
+        if githubTimer == nil {
+            githubTimer = Timer.scheduledTimer(withTimeInterval: 90, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { if self?.window?.isVisible == true { self?.syncGitHub() } }
+            }
+        }
+        if githubSyncing || (!force && githubSyncedAt[pr].map { Date().timeIntervalSince($0) < 30 } == true) { return }
+        githubSyncing = true
+        githubSyncedAt[pr] = Date()
+        let repo = repoPath, me = document.reviewAuthor, base = document.baseRev
+        DispatchQueue.global(qos: .utility).async {
+            let changed = Result { try GitHubReviewSync.pull(repo: repo, pr: pr, me: me, base: base) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.githubSyncing = false
+                if case .success(true) = changed, self.document.githubPR == pr { self.document.reloadThreads() }
+                if case let .failure(e) = changed, force { self.document.onNotice?("Couldn't get GitHub's comments: " + message(for: e)) }
+            }
+        }
+    }
+
     /// Mirror failing CI annotations as review threads (at most once a minute per commit; `force` on ⌘R).
     func syncCI(force: Bool = false) {
         guard Style.shared.settings.ciComments, let sha = ciCommit() else { return }
@@ -876,13 +907,37 @@ final class ReviewView: NSView, NSPopoverDelegate {
     }
 
     @objc func showReview() {
-        let vc = ReviewSubmitViewController(pending: document.pendingCount, open: document.openCommentCount, repo: repoPath, readOnly: document.readOnly)
+        let vc = ReviewSubmitViewController(pending: document.pendingCount, open: document.openCommentCount, repo: repoPath, readOnly: document.readOnly,
+                                           githubPR: document.githubPR)
         let popover = NSPopover()
         popover.behavior = .transient
         popover.contentViewController = vc
         vc.onSubmit = { [weak self, weak vc] body, verdict, targets in
             guard let self else { return }
-            if let error = self.submit(body: body, verdict: verdict, targets: targets) { vc?.show(error: error) } else { popover.close() }
+            guard let pr = self.document.githubPR else {
+                if let error = self.submit(body: body, verdict: verdict, targets: targets) { vc?.show(error: error) } else { popover.close() }
+                return
+            }
+            // A PR: the review goes to GitHub first; only then is it submitted here.
+            vc?.setBusy(true)
+            let repo = self.repoPath, me = self.document.reviewAuthor, base = self.document.baseRev
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = Result { try GitHubReviewSync.submit(repo: repo, pr: pr, me: me, base: base, body: body, verdict: verdict) }
+                DispatchQueue.main.async { [weak self, weak vc] in
+                    guard let self else { return }
+                    vc?.setBusy(false)
+                    switch result {
+                    case let .failure(e):
+                        self.document.reloadThreads()
+                        vc?.show(error: "GitHub didn't take the review: " + message(for: e))
+                    case let .success(notes):
+                        if let error = self.submit(body: body, verdict: verdict, targets: targets) { return vc?.show(error: error) ?? () }
+                        popover.close()
+                        self.notice.show((["Review posted to GitHub."] + notes).joined(separator: " "))
+                        self.syncGitHub(force: true)
+                    }
+                }
+            }
         }
         vc.onDiscard = { [weak self] in
             guard let self else { return }
@@ -1042,6 +1097,12 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
     var repoRootForTests: String { repoPath }
     /// Showing a commit: files aren't on disk, so no editing and no live reload.
     var readOnly = false
+    /// The PR on screen (its GitHub threads show; other PRs' don't). Set by ReviewView.reload.
+    var prNumber: Int?
+    /// The PR whose GitHub review your comments go to (nil: they stay here).
+    var githubPR: Int? { Style.shared.settings.githubComments ? prNumber : nil }
+    /// Something went to GitHub: pull its threads back (ids, others' replies).
+    var onGitHubChanged: (() -> Void)?
     private var reloadAgain = false
     var onFileChanged: ((Int) -> Void)?
     var onCurrentFile: ((Int) -> Void)?
@@ -1666,7 +1727,8 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
 
     /// Re-read comments.json (ours or an agent's changes) and place every thread.
     func reloadThreads() {
-        allThreads = (try? loadThreads(repoRoot: repoPath)) ?? []
+        let pr = prNumber.map(UInt32.init)
+        allThreads = ((try? loadThreads(repoRoot: repoPath)) ?? []).filter { threadInView(thread: $0, pr: pr) }
         pendingCount = Int((try? onramp.pendingCount(repoRoot: repoPath, author: author)) ?? 0)
         let byPath = Dictionary(grouping: allThreads, by: \.path)
         for (i, file) in files.enumerated() {
@@ -1770,8 +1832,33 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
                                        line: UInt32(target.line), oldSide: target.old, author: author, body: body, pending: pending)
             file.composer = nil
             reloadThreads()
+            if !pending, let pr = githubPR {
+                let repo = repoPath, base = baseRev
+                github { try GitHubReviewSync.publish(thread, repo: repo, pr: pr, base: base) }
+            }
             if sendNow { send(thread, file: i, line: target.line) }
         } catch { NSSound.beep() }
+    }
+
+    /// Do something on GitHub in the background; then show the result (or why it failed).
+    private func github(_ work: @escaping () throws -> Void) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            var error: Error?
+            do { try work() } catch let e { error = e }
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                self.reloadThreads()
+                if let error { self.onNotice?("GitHub: " + message(for: error)) }
+                self.onGitHubChanged?()
+            }
+        }
+    }
+
+    /// Your newest reply in thread `id` goes to GitHub too, if the thread is there.
+    private func publishReply(_ thread: Thread?) {
+        guard let t = thread, let pr = githubPR, t.github?.pr == UInt32(pr), t.entries.last?.pending == false else { return }
+        let repo = repoPath
+        github { try GitHubReviewSync.publishReply(t, index: t.entries.count - 1, repo: repo, pr: pr) }
     }
 
     /// "Send to Claude" is offered while the diff is your working tree (the agent edits these files).
@@ -1878,7 +1965,9 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
             self?.withFile(path) { i in
                 guard let self else { return }
                 self.files[i].replyingTo = nil
-                self.threadAction(i) { _ = try reply(repoRoot: self.repoPath, id: id, author: self.author, body: text, pending: false) }
+                var posted: Thread?
+                self.threadAction(i) { posted = try reply(repoRoot: self.repoPath, id: id, author: self.author, body: text, pending: false) }
+                self.publishReply(posted)
                 if let t = self.files[i].threads.first(where: { $0.thread.id == id }) { self.send(t.thread, file: i, line: Int(t.line ?? 0)) }
             }
         }
@@ -1902,7 +1991,12 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
             self?.withFile(path) { i in
                 guard let self else { return }
                 self.files[i].editingEntry = nil
-                self.threadAction(i) { _ = try editEntry(repoRoot: self.repoPath, id: id, index: UInt32(k), body: text) }
+                var edited: Thread?
+                self.threadAction(i) { edited = try editEntry(repoRoot: self.repoPath, id: id, index: UInt32(k), body: text) }
+                if self.githubPR != nil, let e = edited?.entries[k], e.author == self.author, let gid = e.githubId {
+                    let repo = self.repoPath
+                    self.github { try GitHub.editComment(repo: repo, id: gid, body: text) }
+                }
             }
         }
         view.onStartReply = { [weak self] in
@@ -1927,21 +2021,35 @@ final class ReviewDocumentView: NSView, DiffEditorDelegate {
             self?.withFile(path) { i in
                 guard let self else { return }
                 self.files[i].replyingTo = nil
-                self.threadAction(i) { _ = try reply(repoRoot: self.repoPath, id: id, author: self.author, body: text, pending: pending) }
+                var posted: Thread?
+                self.threadAction(i) { posted = try reply(repoRoot: self.repoPath, id: id, author: self.author, body: text, pending: pending) }
+                self.publishReply(posted)
             }
         }
         view.onToggleResolved = { [weak self] in
             self?.withFile(path) { i in
                 guard let self, let t = self.files[i].threads.first(where: { $0.thread.id == id }) else { return }
+                let resolved = t.thread.status == .open
                 self.threadAction(i) {
-                    _ = try setResolved(repoRoot: self.repoPath, id: id, resolved: t.thread.status == .open, author: self.author, note: nil)
+                    _ = try setResolved(repoRoot: self.repoPath, id: id, resolved: resolved, author: self.author, note: nil)
+                }
+                if let pr = self.githubPR, t.thread.github?.pr == UInt32(pr) {
+                    let repo = self.repoPath, me = self.author, base = self.baseRev, thread = t.thread
+                    self.github { try GitHubReviewSync.setResolved(thread, resolved: resolved, repo: repo, pr: pr, me: me, base: base) }
                 }
             }
         }
         view.onDelete = { [weak self] in
             self?.withFile(path) { i in
                 guard let self else { return }
+                let thread = self.files[i].threads.first { $0.thread.id == id }?.thread
                 self.threadAction(i) { try deleteThread(repoRoot: self.repoPath, id: id) }
+                // All yours on GitHub: delete it there too. Someone else's words stay there (only hidden here).
+                let onGitHub = thread?.entries.filter { $0.githubId != nil } ?? []
+                if self.githubPR != nil, thread?.github != nil, !onGitHub.isEmpty, onGitHub.allSatisfy({ $0.author == self.author }) {
+                    let repo = self.repoPath, ids = onGitHub.compactMap(\.githubId)
+                    self.github { for gid in ids.reversed() { try GitHub.deleteComment(repo: repo, id: gid) } }
+                }
             }
         }
         addSubview(view, positioned: .below, relativeTo: hover) // above canvas and editors

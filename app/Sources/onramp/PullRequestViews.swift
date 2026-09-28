@@ -124,22 +124,10 @@ final class PullRequestList: NSViewController, NSSearchFieldDelegate {
 
     func focusSearch() { view.window?.makeFirstResponder(search) }
 
-    /// Pick the gh binary; saved as gh_path in settings.json.
     @objc private func chooseGhClicked() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.message = "Where is the GitHub CLI (gh)?"
-        panel.directoryURL = URL(fileURLWithPath: "/opt/homebrew/bin")
-        panel.treatsFilePackagesAsDirectories = true
-        guard let window = view.window else { return }
-        panel.beginSheetModal(for: window) { [weak self] response in
-            guard response == .OK, let url = panel.url else { return }
-            MainActor.assumeIsolated {
-                Style.shared.update { $0.ghPath = url.path }
-                self?.chooseGh.isHidden = true
-                self?.refresh()
-            }
+        GitHubCLI.choose(for: view.window) { [weak self] in
+            self?.chooseGh.isHidden = true
+            self?.refresh()
         }
     }
 

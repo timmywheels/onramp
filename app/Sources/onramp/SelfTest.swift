@@ -393,6 +393,77 @@ enum SelfTest {
             }
             return
         }
+        if mode == "ghcomments" { // a PR's comments on GitHub, both ways, for real (ONRAMP_PR): posts test comments
+            Task { @MainActor in
+                let n = Int(ProcessInfo.processInfo.environment["ONRAMP_PR"] ?? "0")!
+                review.openPullRequest(n) { error in
+                    MainActor.assumeIsolated {
+                        if let error { log("error: \(error)"); log("ready"); return }
+                        let doc = review.document, repo = doc.repoRootForTests, me = doc.reviewAuthor, base = doc.baseRev
+                        // A changed line: added (new side), else removed (old side).
+                        func changed() -> (ReviewFile, Int, Bool)? {
+                            for f in doc.files {
+                                let new = (f.newText as String).components(separatedBy: "\n"), old = f.oldText.components(separatedBy: "\n")
+                                let olds = Set(old), news = Set(new)
+                                if let k = new.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !olds.contains($0) }) { return (f, k, false) }
+                                if let k = old.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty && !news.contains($0) }) { return (f, k, true) }
+                            }
+                            return nil
+                        }
+                        guard let (f, line, oldSide) = changed() else { log("no changed line"); log("ready"); return }
+                        let text = oldSide ? f.oldText : f.newText as String
+                        log("PR #\(n) as \(me); commenting on \(f.path):\(line + 1) (\(oldSide ? "old" : "new") side)")
+                        DispatchQueue.global().async {
+                            func step(_ name: String, _ work: () throws -> Void) {
+                                do { try work(); log("ok: \(name)") } catch { log("FAILED: \(name): \(message(for: error))") }
+                            }
+                            var single: Thread!
+                            let post = ProcessInfo.processInfo.environment["ONRAMP_GH_VIEWONLY"] == nil
+                            if post {
+                            step("one-off comment") {
+                                single = try addThread(repoRoot: repo, path: f.path, text: text, line: UInt32(line), oldSide: oldSide, author: me, body: "[Onramp test] a single comment", pending: false)
+                                try GitHubReviewSync.publish(single, repo: repo, pr: n, base: base)
+                            }
+                            step("one-off reply") {
+                                let t = try reply(repoRoot: repo, id: single.id, author: me, body: "[Onramp test] a reply", pending: false)
+                                guard try GitHubReviewSync.publishReply(t, index: t.entries.count - 1, repo: repo, pr: n) else { throw GitHub.Failure(description: "not linked") }
+                            }
+                            step("edit") {
+                                let t = try editEntry(repoRoot: repo, id: single.id, index: 0, body: "[Onramp test] a single comment (edited)")
+                                try GitHub.editComment(repo: repo, id: t.entries[0].githubId!, body: t.entries[0].body)
+                            }
+                            step("agent reply stays local") { _ = try reply(repoRoot: repo, id: single.id, author: "Claude", body: "agent note", pending: false) }
+                            step("review: 2 pending comments + a pending reply, Approve") {
+                                _ = try addThread(repoRoot: repo, path: f.path, text: text, line: UInt32(line), oldSide: oldSide, author: me, body: "[Onramp test] review comment 1", pending: true)
+                                _ = try addThread(repoRoot: repo, path: f.path, text: text, line: UInt32(line), oldSide: oldSide, author: me, body: "[Onramp test] review comment 2", pending: true)
+                                _ = try reply(repoRoot: repo, id: single.id, author: me, body: "[Onramp test] pending reply in the review", pending: true)
+                                let notes = try GitHubReviewSync.submit(repo: repo, pr: n, me: me, base: base, body: "[Onramp test] review summary", verdict: .approve)
+                                _ = try submitReview(repoRoot: repo, author: me, body: "[Onramp test] review summary", verdict: .approve)
+                                log("notes: \(notes)")
+                            }
+                            step("resolve") {
+                                let t = try loadThreads(repoRoot: repo).first { $0.id == single.id }!
+                                try GitHubReviewSync.setResolved(t, resolved: true, repo: repo, pr: n, me: me, base: base)
+                                _ = try setResolved(repoRoot: repo, id: single.id, resolved: true, author: me, note: nil)
+                            }
+                            step("pull") { log("pull changed: \(try GitHubReviewSync.pull(repo: repo, pr: n, me: me, base: base))") }
+                            step("pull again (should be no change)") { log("pull changed: \(try GitHubReviewSync.pull(repo: repo, pr: n, me: me, base: base))") }
+                            }
+                            let mine = ((try? loadThreads(repoRoot: repo)) ?? []).filter { $0.github?.pr == UInt32(n) }
+                            for t in mine {
+                                log("thread \(t.id) gh=\(t.github?.threadId ?? "nil") \(t.status) " + t.entries.map { "\($0.author)#\($0.githubId.map(String.init) ?? "-")\($0.pending ? "(pending)" : "")" }.joined(separator: " "))
+                            }
+                            DispatchQueue.main.async {
+                                doc.reloadThreads()
+                                log("in view: \(doc.files.flatMap(\.threads).count) threads, panel \(doc.panelItems.count), pr \(doc.prNumber ?? -1), paths \(Set(mine.map(\.path))) vs \(doc.files.map(\.path).prefix(2))")
+                                log("ready")
+                            }
+                        }
+                    }
+                }
+            }
+            return
+        }
         if mode == "context" {
             Task { @MainActor in
                 AppDelegate.current?.openContext(nil)

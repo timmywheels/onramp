@@ -178,9 +178,13 @@ final class ReviewSubmitViewController: NSViewController {
 
     /// Reviewing a PR or a commit: nothing is checked out, so agents can't fix anything here.
     private let readOnly: Bool
+    /// The PR whose GitHub review this becomes (nil: it stays in Onramp).
+    private let githubPR: Int?
+    private let submitButton = NSButton(title: "Submit review", target: nil, action: nil)
 
-    init(pending: Int, open: Int, repo: String, readOnly: Bool = false) {
+    init(pending: Int, open: Int, repo: String, readOnly: Bool = false, githubPR: Int? = nil) {
         self.readOnly = readOnly
+        self.githubPR = githubPR
         self.pending = pending
         self.open = open
         self.repo = repo
@@ -198,7 +202,7 @@ final class ReviewSubmitViewController: NSViewController {
         }
         let stack = PopoverUI.stack([])
         PopoverUI.add(PopoverUI.title("Finish your review"), to: stack, spacingAfter: 4)
-        PopoverUI.add(PopoverUI.note(subtitle), to: stack, spacingAfter: 14)
+        PopoverUI.add(PopoverUI.note(subtitle + (githubPR.map { " Posts to PR #\($0) on GitHub, as you." } ?? "")), to: stack, spacingAfter: 14)
         PopoverUI.add(summaryField(), to: stack, spacingAfter: 16)
 
         let initial = pending > 0 || open > 0 ? 2 : 0 // there's something to fix: request changes
@@ -237,7 +241,9 @@ final class ReviewSubmitViewController: NSViewController {
         continueBox.toolTip = "On: each agent picks up its previous review session, keeping what it learned. Off: a fresh session every time."
         PopoverUI.add(continueBox, to: stack, spacingAfter: 18)
 
-        let submit = NSButton(title: "Submit review", target: self, action: #selector(submitClicked))
+        let submit = submitButton
+        submit.target = self
+        submit.action = #selector(submitClicked)
         submit.bezelStyle = .push
         submit.keyEquivalent = "\r"
         submit.bezelColor = DiffStyle.primaryButton
@@ -302,6 +308,13 @@ final class ReviewSubmitViewController: NSViewController {
         AgentRunner.save(targets, repo: repo)
         AgentRunner.setContinuesSession(continueBox.state == .on, repo: repo)
         onSubmit?(summary.string.trimmingCharacters(in: .whitespacesAndNewlines), Self.verdicts[i].0, targets)
+    }
+
+    /// Posting to GitHub: no second click meanwhile.
+    func setBusy(_ busy: Bool) {
+        submitButton.isEnabled = !busy
+        submitButton.title = busy ? "Posting…" : "Submit review"
+        if busy { errorLabel.isHidden = true }
     }
 
     /// Show why submitting didn't work, in the popover.

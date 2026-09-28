@@ -1,7 +1,7 @@
-import Foundation
+import AppKit
 
 /// Pull requests through the GitHub CLI (`gh`), using your existing login.
-/// Nothing here writes to GitHub.
+/// Writes: merging (here) and review comments (GitHubReviews.swift).
 enum GitHub {
     struct Person: Decodable { let login: String }
     struct Label: Decodable { let name: String }
@@ -123,11 +123,11 @@ enum GitHub {
         return (p.terminationStatus, data, errText)
     }
 
-    private static func gh(_ args: [String], repo: String) throws -> Data {
+    static func gh(_ args: [String], repo: String) throws -> Data {
         guard let path = ghPath() else {
             throw Failure(description: configuredPath.isEmpty
-                ? "Couldn't find the GitHub CLI (gh). Install it (brew install gh), or choose where it is."
-                : "gh_path in settings.json (\(configuredPath)) isn't an executable.", notFound: true)
+                ? "Couldn't find the GitHub CLI (gh). Install it (brew install gh), or show Onramp where it is: Onramp → Locate GitHub CLI…"
+                : "gh_path in settings.json (\(configuredPath)) isn't a program that runs. Onramp → Locate GitHub CLI… to pick it again.", notFound: true)
         }
         var r = try run(path, args, repo: repo, token: cachedToken(gh: path))
         let noGitHubRemote = r.err.contains("none of the git remotes") || r.err.contains("no git remotes")
@@ -147,7 +147,7 @@ enum GitHub {
         return r.out
     }
 
-    private static var decoder: JSONDecoder {
+    static var decoder: JSONDecoder {
         let d = JSONDecoder()
         d.dateDecodingStrategy = .iso8601
         return d
@@ -427,5 +427,34 @@ enum RecentPRs {
     static func add(_ number: Int, title: String, repo: String) {
         let rest = list(repo: repo).filter { $0.number != number }.prefix(7).map { ["n": $0.number, "t": $0.title] as [String: Any] }
         UserDefaults.standard.set([["n": number, "t": title]] + rest, forKey: key(repo))
+    }
+}
+
+/// Where gh is, for when it isn't anywhere Onramp looks: saved as gh_path in settings.json.
+@MainActor
+enum GitHubCLI {
+    /// Pick the gh binary (a sheet on `window`, else a panel). `done` runs once it's saved.
+    static func choose(for window: NSWindow?, done: @escaping () -> Void = {}) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.showsHiddenFiles = true // ~/.local/bin and friends
+        panel.treatsFilePackagesAsDirectories = true
+        panel.message = "Where is the GitHub CLI (gh)? Tip: run `which gh` in Terminal. ⇧⌘G lets you type a path."
+        let current = GitHub.ghPath()
+        panel.directoryURL = URL(fileURLWithPath: current.map { ($0 as NSString).deletingLastPathComponent } ?? "/opt/homebrew/bin")
+        let finish = { (response: NSApplication.ModalResponse) in
+            guard response == .OK, let url = panel.url else { return }
+            guard FileManager.default.isExecutableFile(atPath: url.path) else {
+                let alert = NSAlert()
+                alert.messageText = "That isn't a program"
+                alert.informativeText = "\(url.path) can't be run. Pick the gh file itself (for example /opt/homebrew/bin/gh)."
+                alert.runModal()
+                return
+            }
+            Style.shared.update { $0.ghPath = url.path }
+            done()
+        }
+        if let window { panel.beginSheetModal(for: window) { r in MainActor.assumeIsolated { finish(r) } } } else { finish(panel.runModal()) }
     }
 }

@@ -233,6 +233,7 @@ final class ProjectWindowController: NSWindowController, NSWindowDelegate {
     @objc func reloadReview(_ sender: Any?) {
         let choice = reviewView.choice
         reviewView.syncCI(force: true)
+        reviewView.syncGitHub(force: true)
         if choice.mode == .pullRequest, let n = choice.pr { return reviewView.openPullRequest(Int(n)) } // re-fetch: new commits
         reviewView.reload()
     }

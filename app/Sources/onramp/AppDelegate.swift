@@ -202,6 +202,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSWorkspace.shared.open(Style.settingsURL)
     }
 
+    @objc func locateGitHubCLI(_ sender: Any?) {
+        GitHubCLI.choose(for: NSApp.keyWindow) { [weak self] in self?.front?.reloadReview(nil) }
+    }
+
     @objc func openThemes(_ sender: Any?) {
         NSWorkspace.shared.open(Style.themesDir)
     }
@@ -315,6 +319,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         appMenu.addItem(withTitle: "Settings…", action: #selector(openSettings(_:)), keyEquivalent: ",")
         appMenu.addItem(withTitle: "Check for Updates…", action: #selector(checkForUpdates(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Install Command Line Tool…", action: #selector(installCommandLineTool(_:)), keyEquivalent: "")
+        appMenu.addItem(withTitle: "Locate GitHub CLI…", action: #selector(locateGitHubCLI(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Open Themes Folder", action: #selector(openThemes(_:)), keyEquivalent: "")
         appMenu.addItem(withTitle: "Open Extensions Folder", action: #selector(openExtensions(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
