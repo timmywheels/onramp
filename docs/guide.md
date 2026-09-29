@@ -44,6 +44,8 @@ TSX, Rust, Go, Python, CSS and YAML. Re-run it any time to reset.
   **Check Out** switches your repo to its branch (`gh pr checkout`) so you can edit, commit and push.
 - **Commit and push** from the bottom bar: **Commit N**, **Push N** or **Publish**. Write a message and
   press ⌘↩; the ring fills as it commits and pushes, then turns into a check. Never forces.
+- **⌘P: go anywhere.** Type `#123` (or `123`) for a pull request, a commit hash, `@name` for someone's PRs and
+  commits, or any words to search PRs, commits, branches and commands. ↑↓, ↩, Esc.
 - **Switch branch** from the project menu (top left). Git refuses, and says why, if your changes are in the way.
 - **gh somewhere unusual?** **Onramp → Locate GitHub CLI…** (saved as `gh_path`).
 - **Toolbar, left:** switch project or worktree (this repo's worktrees, recent projects, ⌘O to open a folder).

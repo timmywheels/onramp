@@ -190,6 +190,36 @@ final class ProjectWindowController: NSWindowController, NSWindowDelegate {
         prList?.focusSearch()
     }
 
+    /// ⌘P: the command palette, over this window.
+    @objc func showPalette(_ sender: Any?) {
+        guard let window else { return }
+        let palette = CommandPalette.shared
+        if palette.isShown { return palette.close() }
+        let review = reviewView!, doc = review.document
+        var commands: [(title: String, symbol: String, keys: String, run: () -> Void)] = [
+            ("Pull Requests", "arrow.triangle.pull", "⇧⌘P", { [weak self] in self?.openPullRequest(nil) }),
+            ("Comments", "text.bubble", "", { [weak self] in self?.showComments(nil) }),
+            ("Reload", "arrow.clockwise", "⌘R", { [weak self] in self?.reloadReview(nil) }),
+            ("All Changes on This Branch", "square.stack", "", { var c = review.choice; c.mode = .branch; review.setChoice(c) }),
+            ("Uncommitted Changes", "pencil.and.list.clipboard", "", { var c = review.choice; c.mode = .uncommitted; review.setChoice(c) }),
+            ("Context…", "books.vertical", "⌘K", { [weak self] in self?.openContext(nil) }),
+            ("Open Folder…", "folder", "⌘O", { [weak self] in self?.toolbar.openFolder(nil) }),
+            ("Settings…", "gearshape", "⌘,", { (NSApp.delegate as? AppDelegate)?.openSettings(nil) }),
+        ]
+        if doc.githubPR != nil {
+            commands.insert(("Sync Comments with GitHub", "arrow.triangle.2.circlepath", "", { review.syncGitHub(force: true, manual: true) }), at: 0)
+        }
+        if doc.readOnly, doc.prNumber != nil {
+            commands.insert(("Check Out This Pull Request", "arrow.down.circle", "", { review.checkOutPullRequest() }), at: 0)
+        }
+        let repo = repoPath
+        palette.show(over: window, repo: repo, current: doc.prNumber, actions: .init(
+            openPR: { n in (NSApp.delegate as? AppDelegate)?.viewPullRequest(n, repo: repo) { _ in } },
+            openCommit: { sha in var c = review.choice; c.mode = .commit; c.commit = sha; review.setChoice(c) },
+            switchBranch: { b in review.switchBranch(b) },
+            commands: commands))
+    }
+
     @objc func showComments(_ sender: Any?) { showRight(.comments) }
     @objc func showPullRequests(_ sender: Any?) { showRight(.pullRequests) }
 

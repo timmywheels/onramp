@@ -188,6 +188,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func showComments(_ sender: Any?) { front?.showComments(sender) }
     @objc func showPullRequests(_ sender: Any?) { front?.showPullRequests(sender) }
     @objc func openContext(_ sender: Any?) { front?.openContext(sender) }
+    @objc func showPalette(_ sender: Any?) { front?.showPalette(sender) }
     @objc func toggleComments(_ sender: Any?) { front?.toggleComments(sender) }
     @objc func collapseAll(_ sender: Any?) { front?.collapseAll(sender) }
     @objc func expandAll(_ sender: Any?) { front?.expandAll(sender) }
@@ -352,6 +353,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let reviewItem = NSMenuItem()
         let reviewMenu = NSMenu(title: "Review")
+        reviewMenu.addItem(withTitle: "Go To…", action: #selector(showPalette(_:)), keyEquivalent: "p")
         let pr = reviewMenu.addItem(withTitle: "View Pull Request…", action: #selector(openPullRequest(_:)), keyEquivalent: "p")
         pr.keyEquivalentModifierMask = [.command, .shift]
         reviewMenu.addItem(withTitle: "Context…", action: #selector(openContext(_:)), keyEquivalent: "k")

@@ -483,6 +483,20 @@ enum SelfTest {
             }
             return
         }
+        if mode == "palette" { // ⌘P: what each kind of query finds (ONRAMP_PALETTE: queries, "|"-separated)
+            Task { @MainActor in
+                AppDelegate.current?.front?.showPalette(nil)
+                try? await Task.sleep(nanoseconds: 4_000_000_000) // open PRs arrive from GitHub
+                let queries = (ProcessInfo.processInfo.environment["ONRAMP_PALETTE"] ?? "").split(separator: "|").map(String.init)
+                for q in [""] + queries {
+                    let titles = CommandPalette.shared.typeForTests(q)
+                    log("\u{201C}\(q)\u{201D} → \(titles.count): " + titles.prefix(4).joined(separator: " | "))
+                }
+                if let last = queries.last { _ = CommandPalette.shared.typeForTests(last) }
+                if ProcessInfo.processInfo.environment["ONRAMP_SNAP_OUT"] != nil { snap(window: review.window) } else { log("ready") }
+            }
+            return
+        }
         if mode == "context" {
             Task { @MainActor in
                 AppDelegate.current?.openContext(nil)

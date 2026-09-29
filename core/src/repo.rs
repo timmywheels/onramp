@@ -245,6 +245,22 @@ pub fn list_commits(repo_root: String, since: String, limit: u32) -> Result<Vec<
     Ok(parse_commits(&out.stdout))
 }
 
+/// Recent commits on every branch (the palette searches these), newest first.
+#[uniffi::export]
+pub fn recent_commits(repo_root: String, limit: u32) -> Result<Vec<CommitInfo>, CoreError> {
+    let out = git(&repo_root, &["log", "--all", "--no-merges", &format!("-{limit}"), "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ct"])?;
+    Ok(parse_commits(&out.stdout))
+}
+
+/// The commit `rev` names (a hash, however short, or a ref), if there is one.
+#[uniffi::export]
+pub fn find_commit(repo_root: String, rev: String) -> Option<CommitInfo> {
+    if rev.starts_with('-') || rev.is_empty() { return None; } // never an option to git
+    let out = git(&repo_root, &["log", "-1", "--format=%H%x1f%h%x1f%s%x1f%an%x1f%ct", &format!("{rev}^{{commit}}"), "--"]).ok()?;
+    if !out.status.success() { return None; }
+    parse_commits(&out.stdout).pop()
+}
+
 fn parse_commits(out: &[u8]) -> Vec<CommitInfo> {
     String::from_utf8_lossy(out)
         .lines()
